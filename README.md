@@ -90,6 +90,11 @@ frontend/
     lib/          # API client, query provider
 ```
 
+## Security Notes
+- **Fixed (this pass):** Next.js was bumped from 15.1.4 → **15.5.22** to resolve CVE-2025-66478 (critical, CVSS 10.0, unauthenticated RCE in the App Router's RSC protocol) plus a long tail of other Next.js CVEs disclosed against the 15.1.x line since (XSS, SSRF, cache poisoning, DoS). React/React-DOM were bumped to 19.0.3 to match. Verified with a clean `npm install` + `npm run build` — same routes, no errors, `npm audit` now shows zero critical/RCE findings.
+- **Remaining (flagged, not silently changed):** `npm audit` still reports 3 *high* (not critical) severity issues in `sharp`/`postcss`, which are bundled dependencies inside Next.js's own internals (image optimization / CSS pipeline). The only fix npm offers is jumping to Next.js 16, which is a breaking major-version change — I didn't force that automatically. Recommend evaluating a Next 16 migration separately rather than pulling it in as a side effect of a security patch.
+- **Going forward:** this stack has seen frequent security patches over its 15.x lifetime — set up Dependabot/Renovate on this repo so patch releases land automatically instead of drifting stale again.
+
 ## Known Limitations (as of PPS-009)
 - Email/SMS/WhatsApp notification delivery is architected (via `notification_events` / `NotificationSettings`) but not wired to a live provider — only in-app delivery is live.
 - Report card PDFs and CSV/Excel exports are now **actually generated** (reportlab / pandas+openpyxl, verified against real data) rather than stubbed. Files upload to Cloudinary when credentials are configured; otherwise they're written to local disk and the path is returned — swap in an S3/Cloudinary-backed temp directory for production if you need the files served over HTTP.
