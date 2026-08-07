@@ -43,9 +43,19 @@ apiClient.interceptors.response.use(
 
     if (error.response?.status === 401 && !originalRequest._retry) {
       const refreshToken = getRefreshToken();
+      const onLoginPage = typeof window !== "undefined" && window.location.pathname === "/login";
+
       if (!refreshToken) {
         clearTokens();
-        if (typeof window !== "undefined") window.location.href = "/login";
+        // Don't hard-redirect here: this branch also fires for the routine
+        // "am I logged in?" check (/auth/me) on public pages like /login,
+        // where a 401 is expected, not an error. A window.location.href
+        // redirect forces a full page reload, which re-mounts AuthProvider,
+        // which calls /auth/me again -> 401 again -> reload again (infinite loop).
+        // Let the caller (e.g. AuthProvider) just treat this as "not logged in".
+        if (typeof window !== "undefined" && !onLoginPage) {
+          window.location.href = "/login";
+        }
         return Promise.reject(error);
       }
 
@@ -66,7 +76,9 @@ apiClient.interceptors.response.use(
         return apiClient(originalRequest);
       } catch (refreshError) {
         clearTokens();
-        if (typeof window !== "undefined") window.location.href = "/login";
+        if (typeof window !== "undefined" && !onLoginPage) {
+          window.location.href = "/login";
+        }
         return Promise.reject(refreshError);
       } finally {
         isRefreshing = false;
