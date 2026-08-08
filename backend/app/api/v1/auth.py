@@ -17,6 +17,7 @@ from app.core.security import (
     verify_password,
 )
 from app.database.session import get_db
+from app.models.people import Parent, Student
 from app.models.user import Role, User
 from app.schemas.auth import (
     ApiResponse,
@@ -35,6 +36,11 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 limiter = Limiter(key_func=get_remote_address)
 
 ALLOWED_SELF_REGISTER_ROLES = {"parent", "teacher", "student"}
+
+
+def _generate_admission_number(db: Session) -> str:
+    count = db.query(Student).count() + 1
+    return f"ADM{count:05d}"
 
 
 @router.post("/register", response_model=ApiResponse, status_code=status.HTTP_201_CREATED)
@@ -74,6 +80,33 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
+
+    # A User account is a login credential; Student/Parent rows are the
+    # school-record profiles that the Students/Parents pages actually query.
+    # Without this, a self-registered account has nowhere to show up. We
+    # auto-provision a bare-bones profile here, linked via user_id, so the
+    # account is immediately visible — administrators can complete the rest
+    # of the profile (class assignment, admission date, etc.) afterward.
+    if payload.role == "student":
+        db.add(Student(
+            user_id=user.id,
+            admission_number=_generate_admission_number(db),
+            first_name=payload.first_name,
+            middle_name=payload.middle_name,
+            last_name=payload.last_name,
+            gender=payload.gender,
+            date_of_birth=payload.date_of_birth,
+            status="active",
+        ))
+        db.commit()
+    elif payload.role == "parent":
+        db.add(Parent(
+            user_id=user.id,
+            full_name=user.full_name,
+            email=payload.email,
+            phone_number=payload.phone_number,
+        ))
+        db.commit()
 
     # NOTE: email dispatch is out of scope for this module; token is generated
     # and ready for a future SMTP integration to send a verification link.
