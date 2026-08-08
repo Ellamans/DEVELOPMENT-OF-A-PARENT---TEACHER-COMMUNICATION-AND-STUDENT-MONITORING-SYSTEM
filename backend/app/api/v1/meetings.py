@@ -103,6 +103,13 @@ def create_pta_meeting(
     return ApiResponse(success=True, message="PTA meeting scheduled.")
 
 
+@router.get("/pta/meetings/{pta_meeting_id}/minutes")
+def list_pta_minutes(
+    pta_meeting_id: UUID, db: Session = Depends(get_db), _user: User = Depends(get_current_user),
+):
+    return {"success": True, "data": db.query(PTAMinutes).filter(PTAMinutes.pta_meeting_id == pta_meeting_id).order_by(PTAMinutes.created_at.desc()).all()}
+
+
 class PTAMinutesIn(BaseModel):
     content: str
     action_items: Optional[str] = None

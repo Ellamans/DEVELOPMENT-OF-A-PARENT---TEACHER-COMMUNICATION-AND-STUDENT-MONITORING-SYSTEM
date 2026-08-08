@@ -36,6 +36,32 @@ class AssessmentConfigIn(BaseModel):
     components: list[ComponentIn]
 
 
+@router.get("/grading-systems")
+def list_grading_systems(db: Session = Depends(get_db), _user: User = Depends(require_permission("reports.view"))):
+    systems = db.query(GradingSystem).filter(GradingSystem.deleted_at.is_(None)).all()
+    result = []
+    for s in systems:
+        ranges = db.query(GradeRange).filter(GradeRange.grading_system_id == s.id).order_by(GradeRange.min_score.desc()).all()
+        result.append({"id": s.id, "name": s.name, "is_active": s.is_active, "ranges": ranges})
+    return {"success": True, "data": result}
+
+
+@router.get("/assessment-configurations")
+def list_assessment_configurations(
+    academic_session_id: Optional[UUID] = Query(None), db: Session = Depends(get_db),
+    _user: User = Depends(require_permission("reports.view")),
+):
+    q = db.query(AssessmentConfiguration).filter(AssessmentConfiguration.deleted_at.is_(None))
+    if academic_session_id:
+        q = q.filter(AssessmentConfiguration.academic_session_id == academic_session_id)
+    configs = q.all()
+    result = []
+    for c in configs:
+        components = db.query(AssessmentComponent).filter(AssessmentComponent.configuration_id == c.id).all()
+        result.append({"id": c.id, "academic_session_id": c.academic_session_id, "name": c.name, "is_active": c.is_active, "components": components})
+    return {"success": True, "data": result}
+
+
 @router.post("/assessment-configurations", response_model=ApiResponse, status_code=201)
 def create_assessment_config(
     payload: AssessmentConfigIn, db: Session = Depends(get_db),
@@ -83,6 +109,24 @@ class CAEntryIn(BaseModel):
     remarks: Optional[str] = None
 
 
+@router.get("/continuous-assessments")
+def list_continuous_assessments(
+    class_arm_id: Optional[UUID] = None, subject_id: Optional[UUID] = None, academic_term_id: Optional[UUID] = None,
+    student_id: Optional[UUID] = None,
+    db: Session = Depends(get_db), _user: User = Depends(require_permission("results.create")),
+):
+    q = db.query(ContinuousAssessment).filter(ContinuousAssessment.deleted_at.is_(None))
+    if class_arm_id:
+        q = q.filter(ContinuousAssessment.class_arm_id == class_arm_id)
+    if subject_id:
+        q = q.filter(ContinuousAssessment.subject_id == subject_id)
+    if academic_term_id:
+        q = q.filter(ContinuousAssessment.academic_term_id == academic_term_id)
+    if student_id:
+        q = q.filter(ContinuousAssessment.student_id == student_id)
+    return {"success": True, "data": q.all()}
+
+
 @router.post("/continuous-assessments", response_model=ApiResponse, status_code=201)
 def enter_ca_score(
     payload: CAEntryIn, db: Session = Depends(get_db), user: User = Depends(require_permission("results.create")),
@@ -116,6 +160,26 @@ class ExamEntryIn(BaseModel):
     academic_session_id: UUID
     academic_term_id: UUID
     exam_score: float
+
+
+@router.get("/exam-results")
+def list_exam_results(
+    class_arm_id: Optional[UUID] = None, subject_id: Optional[UUID] = None, academic_term_id: Optional[UUID] = None,
+    student_id: Optional[UUID] = None, status_filter: Optional[str] = Query(None, alias="status"),
+    db: Session = Depends(get_db), _user: User = Depends(require_permission("results.create")),
+):
+    q = db.query(ExamResult).filter(ExamResult.deleted_at.is_(None))
+    if class_arm_id:
+        q = q.filter(ExamResult.class_arm_id == class_arm_id)
+    if subject_id:
+        q = q.filter(ExamResult.subject_id == subject_id)
+    if academic_term_id:
+        q = q.filter(ExamResult.academic_term_id == academic_term_id)
+    if student_id:
+        q = q.filter(ExamResult.student_id == student_id)
+    if status_filter:
+        q = q.filter(ExamResult.status == status_filter)
+    return {"success": True, "data": q.all()}
 
 
 @router.post("/exam-results", response_model=ApiResponse, status_code=201)
@@ -193,6 +257,20 @@ def create_grading_system(
     return ApiResponse(success=True, message="Grading system created.")
 
 
+@router.patch("/grading-systems/{system_id}/activate", response_model=ApiResponse)
+def activate_grading_system(
+    system_id: UUID, db: Session = Depends(get_db),
+    _user: User = Depends(require_role("super_admin", "school_administrator")),
+):
+    target = db.query(GradingSystem).filter(GradingSystem.id == system_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Grading system not found.")
+    db.query(GradingSystem).update({GradingSystem.is_active: False})
+    target.is_active = True
+    db.commit()
+    return ApiResponse(success=True, message=f"Grading system '{target.name}' is now active.")
+
+
 def resolve_grade(db: Session, score: float) -> Optional[GradeRange]:
     active_system = db.query(GradingSystem).filter(GradingSystem.is_active.is_(True)).first()
     if not active_system:
@@ -204,6 +282,152 @@ def resolve_grade(db: Session, score: float) -> Optional[GradeRange]:
 
 
 # ---------- Report Cards ----------
+
+@router.get("/report-cards")
+def list_report_cards_for_class(
+    class_arm_id: UUID, academic_term_id: UUID, db: Session = Depends(get_db),
+    _user: User = Depends(require_permission("reports.view")),
+):
+    """List (computed and/or published) report cards for every student in a class arm, for a given term."""
+    student_ids = [s.id for s in db.query(Student.id).filter(Student.class_arm_id == class_arm_id, Student.deleted_at.is_(None)).all()]
+    cards = db.query(ReportCard).filter(
+        ReportCard.student_id.in_(student_ids), ReportCard.academic_term_id == academic_term_id
+    ).order_by(ReportCard.overall_position).all()
+
+    students_by_id = {s.id: s for s in db.query(Student).filter(Student.id.in_(student_ids)).all()}
+    result = []
+    for c in cards:
+        student = students_by_id.get(c.student_id)
+        result.append({
+            "id": c.id, "student_id": c.student_id,
+            "student_name": student.full_name if student else "Unknown",
+            "admission_number": student.admission_number if student else None,
+            "overall_average": c.overall_average, "overall_position": c.overall_position,
+            "promotion_status": c.promotion_status, "published": c.published, "pdf_url": c.pdf_url,
+        })
+    return {"success": True, "data": result}
+
+
+class ComputeClassResultsIn(BaseModel):
+    class_arm_id: UUID
+    academic_session_id: UUID
+    academic_term_id: UUID
+
+
+@router.post("/report-cards/compute-class", response_model=ApiResponse)
+def compute_class_results(
+    payload: ComputeClassResultsIn, db: Session = Depends(get_db),
+    _user: User = Depends(require_role("teacher", "class_teacher", "vice_principal", "principal", "school_administrator")),
+):
+    """
+    Aggregates every student's CA + exam scores into SubjectResult rows, ranks students within
+    each subject and overall, then upserts a (draft, unpublished) ReportCard per student.
+    Only exam results that are 'approved' or 'published' are counted — anything still in the
+    draft/review chain is treated as not yet entered for computation purposes.
+    """
+    students = db.query(Student).filter(
+        Student.class_arm_id == payload.class_arm_id, Student.deleted_at.is_(None)
+    ).all()
+    if not students:
+        raise HTTPException(status_code=404, detail="No students found in this class arm.")
+    student_ids = [s.id for s in students]
+
+    ca_rows = db.query(ContinuousAssessment).filter(
+        ContinuousAssessment.class_arm_id == payload.class_arm_id,
+        ContinuousAssessment.academic_term_id == payload.academic_term_id,
+    ).all()
+    exam_rows = db.query(ExamResult).filter(
+        ExamResult.class_arm_id == payload.class_arm_id,
+        ExamResult.academic_term_id == payload.academic_term_id,
+        ExamResult.status.in_(["approved", "published"]),
+    ).all()
+
+    subject_ids = {r.subject_id for r in ca_rows} | {r.subject_id for r in exam_rows}
+    if not subject_ids:
+        raise HTTPException(status_code=422, detail="No CA or approved exam scores found for this class/term yet.")
+
+    # student_id -> subject_id -> total CA score
+    ca_totals: dict = {}
+    for r in ca_rows:
+        ca_totals.setdefault(r.student_id, {}).setdefault(r.subject_id, 0.0)
+        ca_totals[r.student_id][r.subject_id] += r.score
+
+    # student_id -> subject_id -> exam score
+    exam_totals: dict = {}
+    for r in exam_rows:
+        exam_totals.setdefault(r.student_id, {})[r.subject_id] = r.exam_score or 0.0
+
+    # Build overall_total per student per subject, upsert SubjectResult, collect for ranking
+    per_subject_totals: dict = {sid: [] for sid in subject_ids}  # subject_id -> [(student_id, overall_total)]
+    for student in students:
+        for subject_id in subject_ids:
+            ca_total = ca_totals.get(student.id, {}).get(subject_id, 0.0)
+            exam_score = exam_totals.get(student.id, {}).get(subject_id, 0.0)
+            if ca_total == 0.0 and exam_score == 0.0:
+                continue  # student not offering this subject / no scores yet
+            overall_total = ca_total + exam_score
+            grade_range = resolve_grade(db, overall_total)
+
+            existing = db.query(SubjectResult).filter(
+                SubjectResult.student_id == student.id, SubjectResult.subject_id == subject_id,
+                SubjectResult.academic_term_id == payload.academic_term_id,
+            ).first()
+            if existing:
+                existing.ca_total, existing.exam_score, existing.overall_total = ca_total, exam_score, overall_total
+                existing.grade = grade_range.grade if grade_range else None
+                existing.grade_point = grade_range.grade_point if grade_range else None
+            else:
+                db.add(SubjectResult(
+                    student_id=student.id, subject_id=subject_id, academic_session_id=payload.academic_session_id,
+                    academic_term_id=payload.academic_term_id, ca_total=ca_total, exam_score=exam_score,
+                    overall_total=overall_total, grade=grade_range.grade if grade_range else None,
+                    grade_point=grade_range.grade_point if grade_range else None,
+                ))
+            per_subject_totals[subject_id].append((student.id, overall_total))
+    db.flush()
+
+    # Rank subject_position within each subject (1 = highest total)
+    for subject_id, entries in per_subject_totals.items():
+        ranked = sorted(entries, key=lambda e: e[1], reverse=True)
+        for position, (student_id, _) in enumerate(ranked, start=1):
+            db.query(SubjectResult).filter(
+                SubjectResult.student_id == student_id, SubjectResult.subject_id == subject_id,
+                SubjectResult.academic_term_id == payload.academic_term_id,
+            ).update({SubjectResult.subject_position: position})
+
+    # Compute each student's overall average and upsert ReportCard, then rank overall_position
+    averages = []
+    for student in students:
+        results = db.query(SubjectResult).filter(
+            SubjectResult.student_id == student.id, SubjectResult.academic_term_id == payload.academic_term_id,
+        ).all()
+        if not results:
+            continue
+        avg = sum(r.overall_total for r in results) / len(results)
+
+        card = db.query(ReportCard).filter(
+            ReportCard.student_id == student.id, ReportCard.academic_term_id == payload.academic_term_id,
+        ).first()
+        if card:
+            card.overall_average = avg
+        else:
+            card = ReportCard(
+                student_id=student.id, academic_session_id=payload.academic_session_id,
+                academic_term_id=payload.academic_term_id, overall_average=avg, published=False,
+            )
+            db.add(card)
+        averages.append((student.id, avg))
+    db.flush()
+
+    ranked_students = sorted(averages, key=lambda e: e[1], reverse=True)
+    for position, (student_id, _) in enumerate(ranked_students, start=1):
+        db.query(ReportCard).filter(
+            ReportCard.student_id == student_id, ReportCard.academic_term_id == payload.academic_term_id,
+        ).update({ReportCard.overall_position: position})
+
+    db.commit()
+    return ApiResponse(success=True, message=f"Results computed for {len(ranked_students)} students across {len(subject_ids)} subjects.")
+
 
 @router.get("/report-cards/{student_id}")
 def get_report_card(

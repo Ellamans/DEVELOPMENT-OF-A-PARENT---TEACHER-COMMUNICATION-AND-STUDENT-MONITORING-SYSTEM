@@ -215,6 +215,14 @@ def create_class(
     return ApiResponse(success=True, message="Class created.")
 
 
+@router.get("/class-arms")
+def list_class_arms(class_id: Optional[UUID] = Query(None), db: Session = Depends(get_db)):
+    q = db.query(ClassArm).filter(ClassArm.deleted_at.is_(None))
+    if class_id:
+        q = q.filter(ClassArm.class_id == class_id)
+    return {"success": True, "data": q.all()}
+
+
 @router.post("/class-arms", response_model=ApiResponse, status_code=201)
 def create_class_arm(
     payload: ClassArmIn,

@@ -1,7 +1,9 @@
+import os
 from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -118,6 +120,22 @@ def request_export(
 @router.get("/reports/export-history")
 def export_history(db: Session = Depends(get_db), user: User = Depends(require_permission("reports.export"))):
     return {"success": True, "data": db.query(ReportExport).filter(ReportExport.exported_by == user.id).order_by(ReportExport.created_at.desc()).all()}
+
+
+@router.get("/reports/export/{export_id}/download")
+def download_export(
+    export_id: UUID, db: Session = Depends(get_db), user: User = Depends(require_permission("reports.export")),
+):
+    export = db.query(ReportExport).filter(ReportExport.id == export_id, ReportExport.exported_by == user.id).first()
+    if not export or not export.file_url:
+        raise HTTPException(status_code=404, detail="Export not found.")
+    if not os.path.exists(export.file_url):
+        raise HTTPException(
+            status_code=410,
+            detail="This export file is no longer available on the server (it may have been cleared on restart). Please generate a new export.",
+        )
+    filename = f"{export.report_type}.{'csv' if export.file_format == 'csv' else 'xlsx'}"
+    return FileResponse(export.file_url, filename=filename)
 
 
 # ---------- Global Search ----------
