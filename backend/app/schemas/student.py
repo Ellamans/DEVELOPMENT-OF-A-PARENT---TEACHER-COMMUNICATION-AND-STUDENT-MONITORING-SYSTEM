@@ -7,6 +7,7 @@ from pydantic import BaseModel
 
 class StudentIn(BaseModel):
     admission_number: Optional[str] = None  # auto-generated if not supplied
+    user_id: Optional[UUID] = None  # optional: link to an existing self-registered login account
     first_name: str
     middle_name: Optional[str] = None
     last_name: str
@@ -38,6 +39,7 @@ class ParentLinkIn(BaseModel):
 
 
 class ParentIn(BaseModel):
+    user_id: Optional[UUID] = None  # optional: link to an existing self-registered login account
     full_name: str
     email: Optional[str] = None
     phone_number: Optional[str] = None

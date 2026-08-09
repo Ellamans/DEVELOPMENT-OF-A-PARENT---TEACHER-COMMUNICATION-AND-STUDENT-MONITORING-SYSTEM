@@ -66,6 +66,7 @@ class UserOut(BaseModel):
     roles: list[str]
     last_login: Optional[datetime]
     created_at: datetime
+    has_profile: Optional[bool] = None  # populated only where relevant (teacher/parent/student roles)
 
     model_config = {"from_attributes": True}
 
