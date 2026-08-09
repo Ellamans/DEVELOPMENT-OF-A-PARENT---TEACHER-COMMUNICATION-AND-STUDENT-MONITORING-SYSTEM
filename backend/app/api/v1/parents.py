@@ -4,14 +4,83 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import require_permission
+from app.auth.dependencies import get_current_user, require_permission
 from app.database.session import get_db
-from app.models.people import Parent
+from app.models.academics import BehaviourRecord
+from app.models.people import Parent, Student
+from app.models.security import AttendanceRecord
 from app.models.user import User
 from app.schemas.auth import ApiResponse
 from app.schemas.student import ParentIn
 
 router = APIRouter(prefix="/parents", tags=["Parent Management"])
+
+
+@router.get("/me/children")
+def list_my_children(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """A parent's view of their own linked children. Scoped by ownership
+    (Parent.user_id == the logged-in user), not by a broad students.view
+    permission — a parent should never be able to browse other students."""
+    parent = db.query(Parent).filter(Parent.user_id == user.id, Parent.deleted_at.is_(None)).first()
+    if not parent:
+        return {"success": True, "data": [], "message": "No parent profile linked to this account yet."}
+
+    children = [
+        {
+            "id": s.id, "full_name": s.full_name, "admission_number": s.admission_number,
+            "status": s.status, "class_arm_id": s.class_arm_id,
+        }
+        for s in parent.students if s.deleted_at is None
+    ]
+    return {"success": True, "data": children}
+
+
+@router.get("/me/children/{student_id}/activity")
+def get_my_child_activity(
+    student_id: UUID, db: Session = Depends(get_db), user: User = Depends(get_current_user),
+):
+    """One child's recent activity for their parent — attendance and
+    behaviour records. Ownership is verified before returning anything:
+    the student must actually be linked to this logged-in parent."""
+    parent = db.query(Parent).filter(Parent.user_id == user.id, Parent.deleted_at.is_(None)).first()
+    if not parent or student_id not in {s.id for s in parent.students}:
+        raise HTTPException(status_code=403, detail="This student is not linked to your account.")
+
+    student = db.query(Student).filter(Student.id == student_id, Student.deleted_at.is_(None)).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found.")
+
+    attendance = (
+        db.query(AttendanceRecord)
+        .filter(AttendanceRecord.student_id == student_id, AttendanceRecord.deleted_at.is_(None))
+        .order_by(AttendanceRecord.date.desc())
+        .limit(30)
+        .all()
+    )
+    behaviour = (
+        db.query(BehaviourRecord)
+        .filter(BehaviourRecord.student_id == student_id, BehaviourRecord.deleted_at.is_(None))
+        .order_by(BehaviourRecord.created_at.desc())
+        .limit(20)
+        .all()
+    )
+
+    present_count = sum(1 for a in attendance if a.status == "present")
+    attendance_rate = round((present_count / len(attendance)) * 100, 1) if attendance else None
+
+    return {"success": True, "data": {
+        "student": {
+            "id": student.id, "full_name": student.full_name,
+            "admission_number": student.admission_number, "status": student.status,
+        },
+        "attendance_rate_last_30_records": attendance_rate,
+        "attendance": [{"date": a.date, "status": a.status, "remarks": a.remarks} for a in attendance],
+        "behaviour": [
+            {"category": b.category, "description": b.description, "severity": b.severity,
+             "recorded_at": b.created_at, "status": b.status}
+            for b in behaviour
+        ],
+    }}
 
 
 @router.get("")
