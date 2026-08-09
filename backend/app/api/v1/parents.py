@@ -108,6 +108,16 @@ def create_parent(
 ):
     if payload.email and db.query(Parent).filter(Parent.email == payload.email, Parent.deleted_at.is_(None)).first():
         raise HTTPException(status_code=409, detail="A parent with this email already exists — link the existing record instead.")
+
+    if payload.user_id:
+        target_user = db.query(User).filter(User.id == payload.user_id, User.deleted_at.is_(None)).first()
+        if not target_user:
+            raise HTTPException(status_code=404, detail="That user account was not found.")
+        if not any(r.name == "parent" for r in target_user.roles):
+            raise HTTPException(status_code=422, detail="That user account does not have the parent role.")
+        if db.query(Parent).filter(Parent.user_id == payload.user_id, Parent.deleted_at.is_(None)).first():
+            raise HTTPException(status_code=409, detail="That account is already linked to a parent profile.")
+
     parent = Parent(**payload.model_dump())
     db.add(parent)
     db.commit()

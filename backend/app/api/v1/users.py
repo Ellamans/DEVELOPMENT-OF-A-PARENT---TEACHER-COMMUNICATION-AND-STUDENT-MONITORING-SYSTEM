@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, require_permission
 from app.database.session import get_db
+from app.models.people import Parent, Student, Teacher
 from app.models.user import Role, User, UserPreference
 from app.schemas.auth import ApiResponse, UserOut
 
@@ -65,9 +66,35 @@ def list_users(
 
     total = q.count()
     items = q.offset((page - 1) * page_size).limit(page_size).all()
+
+    # For roles that map to a school-record profile (teacher/parent/student),
+    # tell the frontend whether that profile already exists — this is what
+    # lets the Users page offer a "Create ... Profile" action for accounts
+    # that registered before auto-provisioning existed, or whose profile
+    # was otherwise never created.
+    teacher_user_ids = {t.user_id for t in db.query(Teacher.user_id).filter(Teacher.deleted_at.is_(None)).all()}
+    parent_user_ids = {p.user_id for p in db.query(Parent.user_id).filter(Parent.deleted_at.is_(None), Parent.user_id.isnot(None)).all()}
+    student_user_ids = {s.user_id for s in db.query(Student.user_id).filter(Student.deleted_at.is_(None), Student.user_id.isnot(None)).all()}
+
+    def _has_profile(u: User) -> Optional[bool]:
+        role_names = {r.name for r in u.roles}
+        if "teacher" in role_names:
+            return u.id in teacher_user_ids
+        if "parent" in role_names:
+            return u.id in parent_user_ids
+        if "student" in role_names:
+            return u.id in student_user_ids
+        return None
+
+    out = []
+    for u in items:
+        row = _to_user_out(u)
+        row.has_profile = _has_profile(u)
+        out.append(row)
+
     return {
         "success": True,
-        "data": [_to_user_out(u) for u in items],
+        "data": out,
         "pagination": {"page": page, "page_size": page_size, "total": total},
     }
 

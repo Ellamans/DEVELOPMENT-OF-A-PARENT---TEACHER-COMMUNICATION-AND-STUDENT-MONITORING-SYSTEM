@@ -60,6 +60,16 @@ def list_students(
     }
 
 
+def _validate_linkable_user(db: Session, user_id: UUID, role_name: str, existing_check) -> None:
+    user = db.query(User).filter(User.id == user_id, User.deleted_at.is_(None)).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="That user account was not found.")
+    if not any(r.name == role_name for r in user.roles):
+        raise HTTPException(status_code=422, detail=f"That user account does not have the {role_name} role.")
+    if existing_check(user_id):
+        raise HTTPException(status_code=409, detail="That account is already linked to a profile.")
+
+
 @router.post("", response_model=ApiResponse, status_code=201)
 def create_student(
     payload: StudentIn,
@@ -69,6 +79,12 @@ def create_student(
     admission_number = payload.admission_number or _generate_admission_number(db)
     if db.query(Student).filter(Student.admission_number == admission_number, Student.deleted_at.is_(None)).first():
         raise HTTPException(status_code=409, detail="Admission number already exists.")
+
+    if payload.user_id:
+        _validate_linkable_user(
+            db, payload.user_id, "student",
+            lambda uid: db.query(Student).filter(Student.user_id == uid, Student.deleted_at.is_(None)).first() is not None,
+        )
 
     data = payload.model_dump(exclude={"admission_number"})
     student = Student(admission_number=admission_number, status="active", **data)

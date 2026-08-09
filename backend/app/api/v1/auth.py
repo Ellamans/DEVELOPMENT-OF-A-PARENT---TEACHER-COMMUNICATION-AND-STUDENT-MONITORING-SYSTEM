@@ -17,7 +17,7 @@ from app.core.security import (
     verify_password,
 )
 from app.database.session import get_db
-from app.models.people import Parent, Student
+from app.models.people import Parent, Student, Teacher
 from app.models.user import Role, User
 from app.schemas.auth import (
     ApiResponse,
@@ -41,6 +41,11 @@ ALLOWED_SELF_REGISTER_ROLES = {"parent", "teacher", "student"}
 def _generate_admission_number(db: Session) -> str:
     count = db.query(Student).count() + 1
     return f"ADM{count:05d}"
+
+
+def _generate_employee_id(db: Session) -> str:
+    count = db.query(Teacher).count() + 1
+    return f"EMP{count:05d}"
 
 
 @router.post("/register", response_model=ApiResponse, status_code=status.HTTP_201_CREATED)
@@ -105,6 +110,13 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
             full_name=user.full_name,
             email=payload.email,
             phone_number=payload.phone_number,
+        ))
+        db.commit()
+    elif payload.role == "teacher":
+        db.add(Teacher(
+            user_id=user.id,
+            employee_id=_generate_employee_id(db),
+            employment_status="active",
         ))
         db.commit()
 

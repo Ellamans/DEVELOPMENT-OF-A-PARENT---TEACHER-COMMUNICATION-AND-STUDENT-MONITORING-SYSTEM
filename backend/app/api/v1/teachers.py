@@ -49,7 +49,20 @@ def list_teachers(
         q = q.filter(Teacher.department_id == department_id)
     total = q.count()
     items = q.offset((page - 1) * page_size).limit(page_size).all()
-    return {"success": True, "data": items, "pagination": {"page": page, "page_size": page_size, "total": total}}
+
+    user_ids = [t.user_id for t in items]
+    users_by_id = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
+
+    data = []
+    for t in items:
+        u = users_by_id.get(t.user_id)
+        data.append({
+            "id": t.id, "employee_id": t.employee_id, "qualification": t.qualification,
+            "employment_status": t.employment_status, "department_id": t.department_id,
+            "full_name": f"{u.first_name} {u.last_name}" if u else None,
+            "email": u.email if u else None,
+        })
+    return {"success": True, "data": data, "pagination": {"page": page, "page_size": page_size, "total": total}}
 
 
 @router.post("", response_model=ApiResponse, status_code=201)
@@ -58,6 +71,14 @@ def create_teacher(
     db: Session = Depends(get_db),
     _user: User = Depends(require_permission("teachers.create")),
 ):
+    target_user = db.query(User).filter(User.id == payload.user_id, User.deleted_at.is_(None)).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="That user account was not found.")
+    if not any(r.name == "teacher" for r in target_user.roles):
+        raise HTTPException(status_code=422, detail="That user account does not have the teacher role.")
+    if db.query(Teacher).filter(Teacher.user_id == payload.user_id, Teacher.deleted_at.is_(None)).first():
+        raise HTTPException(status_code=409, detail="That account is already linked to a teacher profile.")
+
     employee_id = payload.employee_id or _generate_employee_id(db)
     if db.query(Teacher).filter(Teacher.employee_id == employee_id, Teacher.deleted_at.is_(None)).first():
         raise HTTPException(status_code=409, detail="Employee ID already exists.")
