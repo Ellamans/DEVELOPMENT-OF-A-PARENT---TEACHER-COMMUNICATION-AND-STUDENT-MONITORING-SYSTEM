@@ -11,7 +11,8 @@ interface Teacher {
   employee_id: string;
   qualification: string | null;
   employment_status: string;
-  employment_date: string | null;
+  full_name: string | null;
+  email: string | null;
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -60,6 +61,7 @@ export default function TeachersPage() {
           <table className="w-full text-sm">
             <thead className="bg-border/20 text-text/70 text-left">
               <tr>
+                <th className="px-4 py-3">Name</th>
                 <th className="px-4 py-3">Employee ID</th>
                 <th className="px-4 py-3">Qualification</th>
                 <th className="px-4 py-3">Status</th>
@@ -68,7 +70,8 @@ export default function TeachersPage() {
             <tbody>
               {data.data.map((t) => (
                 <tr key={t.id} className="border-t border-border hover:bg-border/10">
-                  <td className="px-4 py-3 font-medium">{t.employee_id}</td>
+                  <td className="px-4 py-3 font-medium">{t.full_name || "—"}<div className="text-xs text-text/40 font-normal">{t.email}</div></td>
+                  <td className="px-4 py-3">{t.employee_id}</td>
                   <td className="px-4 py-3">{t.qualification || "—"}</td>
                   <td className="px-4 py-3"><StatusBadge status={t.employment_status} /></td>
                 </tr>
