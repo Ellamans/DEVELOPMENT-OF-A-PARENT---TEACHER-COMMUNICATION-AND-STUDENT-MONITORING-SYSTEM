@@ -6,13 +6,14 @@ import {
   LayoutDashboard, Users, GraduationCap, School, Settings, LogOut, X,
   Contact, BookUser, Bell, UserCheck, ShieldAlert, CalendarCheck, ClipboardList,
   MessageSquare, FileText, CalendarClock, ScrollText, SlidersHorizontal,
-  Sliders, PencilLine, Award, Users2, FileSpreadsheet,
+  Sliders, PencilLine, Award, Users2, FileSpreadsheet, Baby,
 } from "lucide-react";
 import { useAuth } from "@/context/auth-context";
 import clsx from "clsx";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: [] as string[] },
+  { href: "/my-children", label: "My Children", icon: Baby, roles: ["parent"] },
   { href: "/students", label: "Students", icon: GraduationCap, roles: ["super_admin", "school_administrator", "teacher", "class_teacher"] },
   { href: "/parents", label: "Parents", icon: Contact, roles: ["super_admin", "school_administrator", "teacher", "class_teacher"] },
   { href: "/teachers", label: "Teachers", icon: BookUser, roles: ["super_admin", "school_administrator"] },
