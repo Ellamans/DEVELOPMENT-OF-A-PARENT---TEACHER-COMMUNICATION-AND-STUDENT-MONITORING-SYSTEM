@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.auth.dependencies import require_permission
 from app.database.session import get_db
 from app.models.people import EmergencyContact, Parent, Student, StudentDocument, student_parents
+from app.models.school import ClassArm, SchoolClass
 from app.models.user import User
 from app.schemas.auth import ApiResponse
 from app.schemas.student import ParentLinkIn, StudentIn, StudentStatusUpdate
@@ -17,6 +18,29 @@ router = APIRouter(prefix="/students", tags=["Student Management"])
 def _generate_admission_number(db: Session) -> str:
     count = db.query(Student).count() + 1
     return f"ADM{count:05d}"
+
+
+def _class_lookup(db: Session, students: list[Student]) -> dict:
+    """Batch-resolve class/arm names for a list of students, keyed by student id."""
+    class_ids = {s.current_class_id for s in students if s.current_class_id}
+    arm_ids = {s.class_arm_id for s in students if s.class_arm_id}
+    classes_by_id = {
+        c.id: c for c in db.query(SchoolClass).filter(SchoolClass.id.in_(class_ids)).all()
+    } if class_ids else {}
+    arms_by_id = {
+        a.id: a for a in db.query(ClassArm).filter(ClassArm.id.in_(arm_ids)).all()
+    } if arm_ids else {}
+
+    lookup = {}
+    for s in students:
+        school_class = classes_by_id.get(s.current_class_id)
+        arm = arms_by_id.get(s.class_arm_id)
+        lookup[s.id] = {
+            "class_name": school_class.name if school_class else None,
+            "class_arm_name": arm.name if arm else None,
+            "full_class_name": f"{school_class.name} {arm.name}" if school_class and arm else (school_class.name if school_class else None),
+        }
+    return lookup
 
 
 @router.get("")
@@ -53,9 +77,25 @@ def list_students(
 
     total = q.count()
     items = q.order_by(Student.last_name).offset((page - 1) * page_size).limit(page_size).all()
+
+    class_lookup = _class_lookup(db, items)
+    data = []
+    for s in items:
+        data.append({
+            "id": s.id,
+            "admission_number": s.admission_number,
+            "first_name": s.first_name,
+            "middle_name": s.middle_name,
+            "last_name": s.last_name,
+            "gender": s.gender,
+            "status": s.status,
+            "current_class_id": s.current_class_id,
+            "class_arm_id": s.class_arm_id,
+            **class_lookup.get(s.id, {"class_name": None, "class_arm_name": None, "full_class_name": None}),
+        })
     return {
         "success": True,
-        "data": items,
+        "data": data,
         "pagination": {"page": page, "page_size": page_size, "total": total},
     }
 
@@ -103,7 +143,48 @@ def get_student(
     student = db.query(Student).filter(Student.id == student_id, Student.deleted_at.is_(None)).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found.")
-    return {"success": True, "data": student}
+
+    class_info = _class_lookup(db, [student]).get(
+        student.id, {"class_name": None, "class_arm_name": None, "full_class_name": None}
+    )
+    class_teacher = None
+    if student.class_arm_id:
+        arm = db.query(ClassArm).filter(ClassArm.id == student.class_arm_id).first()
+        if arm and arm.class_teacher_id:
+            teacher_user = db.query(User).filter(User.id == arm.class_teacher_id).first()
+            if teacher_user:
+                class_teacher = {"user_id": teacher_user.id, "full_name": teacher_user.full_name}
+
+    return {
+        "success": True,
+        "data": {
+            "id": student.id,
+            "admission_number": student.admission_number,
+            "user_id": student.user_id,
+            "first_name": student.first_name,
+            "middle_name": student.middle_name,
+            "last_name": student.last_name,
+            "gender": student.gender,
+            "date_of_birth": student.date_of_birth,
+            "state_of_origin": student.state_of_origin,
+            "local_government": student.local_government,
+            "nationality": student.nationality,
+            "religion": student.religion,
+            "blood_group": student.blood_group,
+            "genotype": student.genotype,
+            "home_address": student.home_address,
+            "academic_session_id": student.academic_session_id,
+            "current_class_id": student.current_class_id,
+            "class_arm_id": student.class_arm_id,
+            "status": student.status,
+            "admission_date": student.admission_date,
+            "allergies": student.allergies,
+            "medical_conditions": student.medical_conditions,
+            "emergency_notes": student.emergency_notes,
+            "class_teacher": class_teacher,
+            **class_info,
+        },
+    }
 
 
 @router.patch("/{student_id}", response_model=ApiResponse)

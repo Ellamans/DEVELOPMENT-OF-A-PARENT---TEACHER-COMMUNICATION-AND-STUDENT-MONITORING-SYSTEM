@@ -16,6 +16,7 @@ from app.models.school import (
     SchoolProfile,
     Subject,
 )
+from app.models.user import User
 from app.schemas.auth import ApiResponse
 
 router = APIRouter(prefix="/school-setup", tags=["School Setup"])
@@ -66,6 +67,13 @@ class ClassArmIn(BaseModel):
     name: str
     class_teacher_id: Optional[UUID] = None
     capacity: int = 40
+
+
+class ClassArmUpdateIn(BaseModel):
+    name: Optional[str] = None
+    class_teacher_id: Optional[UUID] = None
+    capacity: Optional[int] = None
+    status: Optional[str] = None
 
 
 class SubjectIn(BaseModel):
@@ -215,12 +223,31 @@ def create_class(
     return ApiResponse(success=True, message="Class created.")
 
 
+def _serialize_class_arm(db: Session, arm: ClassArm) -> dict:
+    school_class = db.query(SchoolClass).filter(SchoolClass.id == arm.class_id).first()
+    teacher_user = (
+        db.query(User).filter(User.id == arm.class_teacher_id).first() if arm.class_teacher_id else None
+    )
+    return {
+        "id": arm.id,
+        "class_id": arm.class_id,
+        "class_name": school_class.name if school_class else None,
+        "name": arm.name,
+        "full_name": f"{school_class.name} {arm.name}" if school_class else arm.name,
+        "capacity": arm.capacity,
+        "status": arm.status,
+        "class_teacher_id": arm.class_teacher_id,
+        "class_teacher_name": teacher_user.full_name if teacher_user else None,
+    }
+
+
 @router.get("/class-arms")
 def list_class_arms(class_id: Optional[UUID] = Query(None), db: Session = Depends(get_db)):
     q = db.query(ClassArm).filter(ClassArm.deleted_at.is_(None))
     if class_id:
         q = q.filter(ClassArm.class_id == class_id)
-    return {"success": True, "data": q.all()}
+    arms = q.order_by(ClassArm.name).all()
+    return {"success": True, "data": [_serialize_class_arm(db, a) for a in arms]}
 
 
 @router.post("/class-arms", response_model=ApiResponse, status_code=201)
@@ -229,9 +256,46 @@ def create_class_arm(
     db: Session = Depends(get_db),
     _user=Depends(require_permission("classes.create")),
 ):
-    db.add(ClassArm(**payload.model_dump()))
+    if payload.class_teacher_id and not db.query(User).filter(
+        User.id == payload.class_teacher_id, User.deleted_at.is_(None)
+    ).first():
+        raise HTTPException(status_code=404, detail="That teacher's user account was not found.")
+    arm = ClassArm(**payload.model_dump())
+    db.add(arm)
     db.commit()
-    return ApiResponse(success=True, message="Class arm created.")
+    db.refresh(arm)
+    return ApiResponse(success=True, message="Class arm created.", data={"id": str(arm.id)})
+
+
+@router.patch("/class-arms/{arm_id}", response_model=ApiResponse)
+def update_class_arm(
+    arm_id: UUID,
+    payload: ClassArmUpdateIn,
+    db: Session = Depends(get_db),
+    _user=Depends(require_permission("classes.edit")),
+):
+    """Mainly used to assign (or change) the class teacher for a class arm,
+    e.g. making Teacher 1 the class teacher for JSS 1A. Once assigned, that
+    teacher becomes the contact parents and students of that arm see in
+    Messaging."""
+    arm = db.query(ClassArm).filter(ClassArm.id == arm_id, ClassArm.deleted_at.is_(None)).first()
+    if not arm:
+        raise HTTPException(status_code=404, detail="Class arm not found.")
+
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("class_teacher_id") is not None:
+        teacher_user = db.query(User).filter(
+            User.id == data["class_teacher_id"], User.deleted_at.is_(None)
+        ).first()
+        if not teacher_user:
+            raise HTTPException(status_code=404, detail="That teacher's user account was not found.")
+        if not any(r.name in {"teacher", "class_teacher"} for r in teacher_user.roles):
+            raise HTTPException(status_code=422, detail="That user account does not have the teacher role.")
+
+    for field, value in data.items():
+        setattr(arm, field, value)
+    db.commit()
+    return ApiResponse(success=True, message="Class arm updated.")
 
 
 # ---------- Subjects ----------
