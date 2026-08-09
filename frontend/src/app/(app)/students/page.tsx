@@ -1,12 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { apiClient } from "@/lib/api-client";
-import { Search, Loader2, Plus, X } from "lucide-react";
+import { Search, Loader2, Plus, X, Pencil } from "lucide-react";
 import { toast } from "sonner";
 
 interface Student {
@@ -15,6 +15,100 @@ interface Student {
   first_name: string;
   last_name: string;
   status: string;
+  current_class_id: string | null;
+  class_arm_id: string | null;
+  class_name: string | null;
+  class_arm_name: string | null;
+  full_class_name: string | null;
+}
+
+interface SchoolClass {
+  id: string;
+  name: string;
+  level: string;
+}
+
+interface ClassArm {
+  id: string;
+  class_id: string;
+  name: string;
+  full_name: string;
+  class_teacher_id: string | null;
+  class_teacher_name: string | null;
+}
+
+function useClassOptions() {
+  const classesQuery = useQuery({
+    queryKey: ["school-classes"],
+    queryFn: async () => (await apiClient.get("/school-setup/classes")).data.data as SchoolClass[],
+  });
+  const armsQuery = useQuery({
+    queryKey: ["class-arms"],
+    queryFn: async () => (await apiClient.get("/school-setup/class-arms")).data.data as ClassArm[],
+  });
+  return { classesQuery, armsQuery };
+}
+
+function ClassAndArmFields({
+  classId,
+  armId,
+  onClassChange,
+  onArmChange,
+  classesQuery,
+  armsQuery,
+}: {
+  classId: string;
+  armId: string;
+  onClassChange: (v: string) => void;
+  onArmChange: (v: string) => void;
+  classesQuery: ReturnType<typeof useClassOptions>["classesQuery"];
+  armsQuery: ReturnType<typeof useClassOptions>["armsQuery"];
+}) {
+  const armsForClass = useMemo(
+    () => (armsQuery.data ?? []).filter((a) => a.class_id === classId),
+    [armsQuery.data, classId]
+  );
+  const selectedArm = armsForClass.find((a) => a.id === armId);
+
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      <div>
+        <label className="block text-sm font-medium text-text mb-1">Class</label>
+        <select
+          value={classId}
+          onChange={(e) => {
+            onClassChange(e.target.value);
+            onArmChange("");
+          }}
+          className="w-full rounded border border-border bg-background px-3 py-2 text-text focus:outline-none focus:ring-2 focus:ring-primary"
+        >
+          <option value="">Not assigned</option>
+          {classesQuery.data?.map((c) => (
+            <option key={c.id} value={c.id}>{c.name}</option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-text mb-1">Class Arm</label>
+        <select
+          value={armId}
+          onChange={(e) => onArmChange(e.target.value)}
+          disabled={!classId}
+          className="w-full rounded border border-border bg-background px-3 py-2 text-text focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
+        >
+          <option value="">Select arm...</option>
+          {armsForClass.map((a) => (
+            <option key={a.id} value={a.id}>{a.name}</option>
+          ))}
+        </select>
+        {selectedArm && (
+          <p className="text-xs text-text/40 mt-1">
+            Class teacher: {selectedArm.class_teacher_name || "not yet assigned"}
+          </p>
+        )}
+      </div>
+    </div>
+  );
 }
 
 const studentSchema = z.object({
@@ -28,6 +122,9 @@ type StudentForm = z.infer<typeof studentSchema>;
 
 function AddStudentModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [classId, setClassId] = useState("");
+  const [armId, setArmId] = useState("");
+  const { classesQuery, armsQuery } = useClassOptions();
   const {
     register,
     handleSubmit,
@@ -37,7 +134,11 @@ function AddStudentModal({ onClose, onCreated }: { onClose: () => void; onCreate
   async function onSubmit(values: StudentForm) {
     setIsSubmitting(true);
     try {
-      await apiClient.post("/students", values);
+      await apiClient.post("/students", {
+        ...values,
+        current_class_id: classId || null,
+        class_arm_id: armId || null,
+      });
       toast.success("Student added.");
       onCreated();
       onClose();
@@ -57,7 +158,7 @@ function AddStudentModal({ onClose, onCreated }: { onClose: () => void; onCreate
 
   return (
     <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-4">
-      <div className="w-full max-w-md bg-card border border-border rounded-lg p-6">
+      <div className="w-full max-w-md bg-card border border-border rounded-lg p-6 max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold text-text">Add Student</h3>
           <button onClick={onClose} className="text-text/50 hover:text-text">
@@ -115,6 +216,18 @@ function AddStudentModal({ onClose, onCreated }: { onClose: () => void; onCreate
             </div>
           </div>
 
+          <ClassAndArmFields
+            classId={classId}
+            armId={armId}
+            onClassChange={setClassId}
+            onArmChange={setArmId}
+            classesQuery={classesQuery}
+            armsQuery={armsQuery}
+          />
+          <p className="text-xs text-text/40 -mt-2">
+            No classes yet? Create them first under School Setup → Classes.
+          </p>
+
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={onClose} className="px-4 py-2 text-sm rounded border border-border text-text">
               Cancel
@@ -134,10 +247,91 @@ function AddStudentModal({ onClose, onCreated }: { onClose: () => void; onCreate
   );
 }
 
+function EditClassModal({
+  student,
+  onClose,
+  onSaved,
+}: {
+  student: Student;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [classId, setClassId] = useState(student.current_class_id ?? "");
+  const [armId, setArmId] = useState(student.class_arm_id ?? "");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const { classesQuery, armsQuery } = useClassOptions();
+
+  useEffect(() => {
+    setClassId(student.current_class_id ?? "");
+    setArmId(student.class_arm_id ?? "");
+  }, [student]);
+
+  async function handleSave() {
+    setIsSubmitting(true);
+    try {
+      await apiClient.patch(`/students/${student.id}`, {
+        first_name: student.first_name,
+        last_name: student.last_name,
+        current_class_id: classId || null,
+        class_arm_id: armId || null,
+      });
+      toast.success("Class assignment updated.");
+      onSaved();
+      onClose();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.detail || "Couldn't update class assignment.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-4">
+      <div className="w-full max-w-md bg-card border border-border rounded-lg p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-semibold text-text">
+            Assign Class — {student.first_name} {student.last_name}
+          </h3>
+          <button onClick={onClose} className="text-text/50 hover:text-text">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <ClassAndArmFields
+            classId={classId}
+            armId={armId}
+            onClassChange={setClassId}
+            onArmChange={setArmId}
+            classesQuery={classesQuery}
+            armsQuery={armsQuery}
+          />
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={onClose} className="px-4 py-2 text-sm rounded border border-border text-text">
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={isSubmitting}
+              className="flex items-center gap-2 rounded bg-primary text-white px-4 py-2 text-sm font-medium hover:opacity-90 disabled:opacity-60"
+            >
+              {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" />}
+              Save
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function StudentsPage() {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const queryClient = useQueryClient();
 
   const { data, isLoading, isError } = useQuery({
@@ -147,6 +341,10 @@ export default function StudentsPage() {
       return data as { data: Student[]; pagination: { total: number; page: number; page_size: number } };
     },
   });
+
+  function refreshStudents() {
+    queryClient.invalidateQueries({ queryKey: ["students"] });
+  }
 
   return (
     <div>
@@ -190,7 +388,9 @@ export default function StudentsPage() {
               <tr>
                 <th className="px-4 py-3">Admission No.</th>
                 <th className="px-4 py-3">Name</th>
+                <th className="px-4 py-3">Class</th>
                 <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody>
@@ -198,7 +398,22 @@ export default function StudentsPage() {
                 <tr key={s.id} className="border-t border-border hover:bg-border/10">
                   <td className="px-4 py-3">{s.admission_number}</td>
                   <td className="px-4 py-3">{s.first_name} {s.last_name}</td>
+                  <td className="px-4 py-3">
+                    {s.full_class_name ? (
+                      s.full_class_name
+                    ) : (
+                      <span className="text-text/40 italic">Not assigned</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 capitalize">{s.status}</td>
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      onClick={() => setEditingStudent(s)}
+                      className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                    >
+                      <Pencil className="h-3.5 w-3.5" /> Assign class
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -226,9 +441,14 @@ export default function StudentsPage() {
       )}
 
       {showAddModal && (
-        <AddStudentModal
-          onClose={() => setShowAddModal(false)}
-          onCreated={() => queryClient.invalidateQueries({ queryKey: ["students"] })}
+        <AddStudentModal onClose={() => setShowAddModal(false)} onCreated={refreshStudents} />
+      )}
+
+      {editingStudent && (
+        <EditClassModal
+          student={editingStudent}
+          onClose={() => setEditingStudent(null)}
+          onSaved={refreshStudents}
         />
       )}
     </div>

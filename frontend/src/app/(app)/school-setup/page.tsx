@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiClient } from "@/lib/api-client";
 import { Loader2, Plus, Check } from "lucide-react";
@@ -265,6 +265,7 @@ function ClassesTab() {
   const queryClient = useQueryClient();
   const [classForm, setClassForm] = useState({ name: "", level: "" });
   const [armForm, setArmForm] = useState({ class_id: "", name: "", capacity: "40" });
+  const [savingArmId, setSavingArmId] = useState<string | null>(null);
 
   const classesQuery = useQuery({
     queryKey: ["school-classes"],
@@ -273,6 +274,38 @@ function ClassesTab() {
       return data.data as { id: string; name: string; level: string }[];
     },
   });
+
+  const armsQuery = useQuery({
+    queryKey: ["class-arms"],
+    queryFn: async () => {
+      const { data } = await apiClient.get("/school-setup/class-arms");
+      return data.data as {
+        id: string;
+        class_id: string;
+        class_name: string | null;
+        name: string;
+        full_name: string;
+        capacity: number;
+        class_teacher_id: string | null;
+        class_teacher_name: string | null;
+      }[];
+    },
+  });
+
+  // The class teacher field on a class arm stores a user ID directly, so we
+  // pull user accounts with the "teacher" role for the assignment dropdown.
+  const usersQuery = useQuery({
+    queryKey: ["users-teacher-role"],
+    queryFn: async () => {
+      const { data } = await apiClient.get("/users", { params: { role: "teacher", page_size: 100 } });
+      return data.data as { id: string; first_name: string; last_name: string; email: string }[];
+    },
+  });
+
+  const teacherUserOptions = useMemo(() => {
+    const users = usersQuery.data ?? [];
+    return users.map((u) => ({ user_id: u.id, name: `${u.first_name} ${u.last_name}` }));
+  }, [usersQuery.data]);
 
   async function addClass(e: React.FormEvent) {
     e.preventDefault();
@@ -300,8 +333,24 @@ function ClassesTab() {
       await apiClient.post("/school-setup/class-arms", { ...armForm, capacity: Number(armForm.capacity) || 40 });
       toast.success("Class arm created.");
       setArmForm({ class_id: "", name: "", capacity: "40" });
+      queryClient.invalidateQueries({ queryKey: ["class-arms"] });
     } catch (err: any) {
       toast.error(err?.response?.data?.detail || "Couldn't create class arm.");
+    }
+  }
+
+  async function assignClassTeacher(armId: string, teacherUserId: string) {
+    setSavingArmId(armId);
+    try {
+      await apiClient.patch(`/school-setup/class-arms/${armId}`, {
+        class_teacher_id: teacherUserId || null,
+      });
+      toast.success(teacherUserId ? "Class teacher assigned." : "Class teacher removed.");
+      queryClient.invalidateQueries({ queryKey: ["class-arms"] });
+    } catch (err: any) {
+      toast.error(err?.response?.data?.detail || "Couldn't assign class teacher.");
+    } finally {
+      setSavingArmId(null);
     }
   }
 
@@ -346,8 +395,11 @@ function ClassesTab() {
 
       <div>
         <h3 className="text-sm font-semibold text-text mb-2">Class Arms</h3>
-        <p className="text-xs text-text/50 mb-2">A class arm is a specific stream within a class, e.g. "JSS 1A".</p>
-        <form onSubmit={addArm} className="space-y-2 mb-3">
+        <p className="text-xs text-text/50 mb-2">
+          A class arm is a specific stream within a class, e.g. "JSS 1A". Assign a class teacher below —
+          that teacher becomes the contact parents and students of that arm see in Messaging.
+        </p>
+        <form onSubmit={addArm} className="space-y-2 mb-4">
           <select
             value={armForm.class_id}
             onChange={(e) => setArmForm({ ...armForm, class_id: e.target.value })}
@@ -377,7 +429,40 @@ function ClassesTab() {
             </button>
           </div>
         </form>
-        <p className="text-xs text-text/40">Class arms don't have a list endpoint yet — added arms won't show here, but they're saved and usable elsewhere (e.g. attendance).</p>
+
+        <div className="bg-card border border-border rounded-lg divide-y divide-border">
+          {armsQuery.isLoading ? (
+            <div className="p-4 flex justify-center"><Loader2 className="h-5 w-5 animate-spin text-primary" /></div>
+          ) : !armsQuery.data?.length ? (
+            <p className="p-4 text-sm text-text/50">No class arms yet.</p>
+          ) : (
+            armsQuery.data.map((a) => (
+              <div key={a.id} className="p-3 text-sm space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-text font-medium">{a.full_name}</span>
+                  <span className="text-text/40 text-xs">capacity {a.capacity}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={a.class_teacher_id || ""}
+                    onChange={(e) => assignClassTeacher(a.id, e.target.value)}
+                    disabled={savingArmId === a.id}
+                    className="flex-1 rounded border border-border bg-background px-2 py-1.5 text-xs text-text disabled:opacity-60"
+                  >
+                    <option value="">No class teacher assigned</option>
+                    {teacherUserOptions.map((t) => (
+                      <option key={t.user_id} value={t.user_id}>{t.name}</option>
+                    ))}
+                  </select>
+                  {savingArmId === a.id && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
+                </div>
+                {a.class_teacher_name && (
+                  <p className="text-xs text-green-600">Class teacher: {a.class_teacher_name}</p>
+                )}
+              </div>
+            ))
+          )}
+        </div>
       </div>
     </div>
   );

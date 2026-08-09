@@ -16,6 +16,13 @@ interface Message {
   created_at: string;
 }
 
+interface ConversationDetail {
+  id: string;
+  conversation_type: string;
+  title: string | null;
+  other_participants: { user_id: string; full_name: string | null }[];
+}
+
 export default function ConversationThreadPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -24,11 +31,21 @@ export default function ConversationThreadPage() {
   const [content, setContent] = useState("");
   const [isSending, setIsSending] = useState(false);
 
+  const { data: conversation } = useQuery({
+    queryKey: ["conversation", id],
+    queryFn: async () => (await apiClient.get(`/conversations/${id}`)).data.data as ConversationDetail,
+  });
+
   const { data, isLoading } = useQuery({
     queryKey: ["messages", id],
     queryFn: async () => (await apiClient.get(`/conversations/${id}/messages`, { params: { page_size: 100 } })).data.data as Message[],
     refetchInterval: 10000,
   });
+
+  const headerLabel =
+    conversation?.title ||
+    conversation?.other_participants?.map((p) => p.full_name || "Unknown user").join(", ") ||
+    "Conversation";
 
   async function sendMessage(e: React.FormEvent) {
     e.preventDefault();
@@ -61,6 +78,7 @@ export default function ConversationThreadPage() {
         <button onClick={() => router.push("/messaging")} className="flex items-center gap-1 text-sm text-text/60 hover:text-text">
           <ArrowLeft className="h-4 w-4" /> Back
         </button>
+        <h2 className="text-sm font-semibold text-text">{headerLabel}</h2>
         <button onClick={archive} className="flex items-center gap-1 text-xs text-red-500 hover:underline">
           <Archive className="h-3 w-3" /> Archive
         </button>
