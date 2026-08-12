@@ -59,6 +59,7 @@ def list_teachers(
         data.append({
             "id": t.id, "employee_id": t.employee_id, "qualification": t.qualification,
             "employment_status": t.employment_status, "department_id": t.department_id,
+            "user_id": t.user_id,
             "full_name": f"{u.first_name} {u.last_name}" if u else None,
             "email": u.email if u else None,
         })
@@ -99,11 +100,16 @@ def get_teacher(
     teacher = db.query(Teacher).filter(Teacher.id == teacher_id, Teacher.deleted_at.is_(None)).first()
     if not teacher:
         raise HTTPException(status_code=404, detail="Teacher not found.")
+    homeroom_arms = db.query(ClassArm).filter(
+        ClassArm.class_teacher_id == teacher.user_id, ClassArm.deleted_at.is_(None)
+    ).all()
     return {"success": True, "data": {
         "id": teacher.id, "employee_id": teacher.employee_id, "qualification": teacher.qualification,
         "employment_status": teacher.employment_status,
+        "user_id": teacher.user_id,
         "subjects": [{"id": s.id, "name": s.name} for s in teacher.subjects],
         "classes": [{"id": c.id, "name": c.name} for c in teacher.classes],
+        "class_teacher_of": [{"id": a.id, "name": a.name} for a in homeroom_arms],
     }}
 
 
