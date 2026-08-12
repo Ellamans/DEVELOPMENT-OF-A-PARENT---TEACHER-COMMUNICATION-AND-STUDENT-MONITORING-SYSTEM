@@ -278,7 +278,10 @@ function ClassesTab() {
   const armsQuery = useQuery({
     queryKey: ["class-arms"],
     queryFn: async () => {
-      const { data } = await apiClient.get("/school-setup/class-arms");
+      // Cache-bust: on flaky connections, an intermediate cache (browser or
+      // network) can serve a stale response even right after invalidation.
+      // A unique param per fetch guarantees a fresh network round-trip.
+      const { data } = await apiClient.get("/school-setup/class-arms", { params: { _: Date.now() } });
       return data.data as {
         id: string;
         class_id: string;
@@ -333,7 +336,7 @@ function ClassesTab() {
       await apiClient.post("/school-setup/class-arms", { ...armForm, capacity: Number(armForm.capacity) || 40 });
       toast.success("Class arm created.");
       setArmForm({ class_id: "", name: "", capacity: "40" });
-      queryClient.invalidateQueries({ queryKey: ["class-arms"] });
+      await queryClient.refetchQueries({ queryKey: ["class-arms"] });
     } catch (err: any) {
       toast.error(err?.response?.data?.detail || "Couldn't create class arm.");
     }
