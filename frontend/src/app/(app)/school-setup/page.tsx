@@ -314,7 +314,11 @@ function ClassesTab() {
       toast.success(teacherUserId ? "Class teacher assigned." : "Class teacher removed.");
       await queryClient.refetchQueries({ queryKey: ["school-classes"] });
     } catch (err: any) {
-      toast.error(err?.response?.data?.detail || "Couldn't assign class teacher.");
+      if (err?.response) {
+        toast.error(err.response.data?.detail || `Couldn't assign class teacher (server said: ${err.response.status}).`);
+      } else {
+        toast.error("Network error — the request never reached the server. Check your connection and try again.");
+      }
     } finally {
       setSavingClassId(null);
     }

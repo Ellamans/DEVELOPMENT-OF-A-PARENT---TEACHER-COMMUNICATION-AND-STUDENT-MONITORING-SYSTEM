@@ -56,9 +56,15 @@ export default function UsersPage() {
         });
       }
       toast.success(`${PROFILE_ROLE_LABEL[role]} profile created.`);
-      queryClient.invalidateQueries({ queryKey: ["users"] });
+      await queryClient.refetchQueries({ queryKey: ["users"] });
     } catch (err: any) {
-      toast.error(err?.response?.data?.detail || `Couldn't create a ${role} profile for this account.`);
+      const status = err?.response?.status;
+      if (status === 409) {
+        toast.error("This account already has a profile — refreshing the list.");
+        await queryClient.refetchQueries({ queryKey: ["users"] });
+      } else {
+        toast.error(err?.response?.data?.detail || `Couldn't create a ${role} profile for this account.`);
+      }
     } finally {
       setCreatingFor(null);
     }
