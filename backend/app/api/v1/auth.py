@@ -55,21 +55,10 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     if payload.role not in ALLOWED_SELF_REGISTER_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role for self-registration.")
 
-    # Compare case-insensitively so "Jane@x.com" can't slip past a check that
-    # only ever saw "jane@x.com" and end up creating a second account.
-    if db.query(User).filter(func.lower(User.email) == payload.email, User.deleted_at.is_(None)).first():
+    normalized_email = payload.email.strip().lower()
+    # Compare case-insensitively so "Jane@x.com" and "jane@x.com" are the same.
+    if db.query(User).filter(func.lower(User.email) == normalized_email, User.deleted_at.is_(None)).first():
         raise HTTPException(status_code=409, detail="A user with this email already exists.")
-
-    # Parent profiles may exist without a User account. Do not allow a new
-    # login account to reuse an email already attached to a parent profile.
-    if db.query(Parent).filter(
-        func.lower(Parent.email) == normalized_email,
-        Parent.deleted_at.is_(None),
-    ).first():
-        raise HTTPException(
-            status_code=409,
-            detail="A parent profile with this email already exists.",
-        )
 
     if payload.phone_number and db.query(User).filter(
         User.phone_number == payload.phone_number, User.deleted_at.is_(None)
@@ -88,7 +77,7 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         first_name=payload.first_name,
         middle_name=payload.middle_name,
         last_name=payload.last_name,
-        email=payload.email,
+        email=normalized_email,
         phone_number=payload.phone_number,
         hashed_password=hash_password(payload.password),
         gender=payload.gender,
@@ -131,7 +120,7 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         db.add(Parent(
             user_id=user.id,
             full_name=user.full_name,
-            email=payload.email,
+            email=normalized_email,
             phone_number=payload.phone_number,
         ))
         db.commit()
@@ -151,7 +140,7 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("10/minute")
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
-    user = db.query(User).filter(func.lower(User.email) == payload.email, User.deleted_at.is_(None)).first()
+    user = db.query(User).filter(func.lower(User.email) == payload.email.strip().lower(), User.deleted_at.is_(None)).first()
 
     if user and user.locked_until and user.locked_until > datetime.now(timezone.utc):
         raise HTTPException(status_code=423, detail="Account temporarily locked due to failed login attempts.")
@@ -204,7 +193,7 @@ def logout(user: User = Depends(get_current_user)):
 
 @router.post("/forgot-password", response_model=ApiResponse)
 def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == payload.email, User.deleted_at.is_(None)).first()
+    user = db.query(User).filter(func.lower(User.email) == payload.email.strip().lower(), User.deleted_at.is_(None)).first()
     if user:
         user.password_reset_token = secrets.token_urlsafe(32)
         user.password_reset_expires = datetime.now(timezone.utc) + timedelta(hours=1)

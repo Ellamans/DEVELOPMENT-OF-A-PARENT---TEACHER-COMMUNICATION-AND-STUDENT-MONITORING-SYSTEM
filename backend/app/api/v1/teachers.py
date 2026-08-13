@@ -103,10 +103,15 @@ def get_teacher(
     homeroom_classes = db.query(SchoolClass).filter(
         SchoolClass.class_teacher_id == teacher.user_id, SchoolClass.deleted_at.is_(None)
     ).all()
+    teacher_user = db.query(User).filter(User.id == teacher.user_id, User.deleted_at.is_(None)).first()
+    full_name = teacher_user.full_name if teacher_user else None
+    email = teacher_user.email if teacher_user else None
     return {"success": True, "data": {
         "id": teacher.id, "employee_id": teacher.employee_id, "qualification": teacher.qualification,
         "employment_status": teacher.employment_status,
         "user_id": teacher.user_id,
+        "full_name": full_name,
+        "email": email,
         "subjects": [{"id": s.id, "name": s.name} for s in teacher.subjects],
         "classes": [{"id": c.id, "name": c.name} for c in teacher.classes],
         "class_teacher_of": [{"id": c.id, "name": c.name} for c in homeroom_classes],
@@ -139,19 +144,10 @@ def assign_class(
     ).first()
     if not teacher or not school_class:
         raise HTTPException(status_code=404, detail="Teacher or class not found.")
-
-    # Keep the teacher's assigned-class relationship and the class's
-    # class-teacher field synchronized.
-    school_class.class_teacher_id = teacher.user_id
     if school_class not in teacher.classes:
         teacher.classes.append(school_class)
-
-    db.commit()
-    return ApiResponse(
-        success=True,
-        message="Teacher assigned to class.",
-        data={"class_id": str(school_class.id), "class_teacher_id": str(teacher.user_id)},
-    )
+        db.commit()
+    return ApiResponse(success=True, message="Class assigned.")
 
 
 @router.delete("/{teacher_id}", response_model=ApiResponse)

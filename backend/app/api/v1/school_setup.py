@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.auth.dependencies import require_permission, require_role
 from app.database.session import get_db
+from app.models.people import Teacher, teacher_classes
 from app.models.school import (
     AcademicSession,
     AcademicTerm,
@@ -241,6 +242,78 @@ def create_class(
     return ApiResponse(success=True, message="Class created.", data={"id": str(school_class.id)})
 
 
+@router.post("/classes/{class_id}/assign-teacher", response_model=ApiResponse)
+def assign_class_teacher(
+    class_id: UUID,
+    payload: dict,
+    db: Session = Depends(get_db),
+    _user=Depends(require_permission("classes.edit")),
+):
+    """Assign a teacher profile as the class teacher.
+
+    The UI has historically had two different teacher identifiers available:
+    the Teacher profile id and the linked User id. Accept either one, resolve
+    it to the Teacher profile, then persist the User id in classes.class_teacher_id
+    (the database FK points to users.id) and the Teacher<->Class association.
+    """
+    school_class = db.query(SchoolClass).filter(
+        SchoolClass.id == class_id,
+        SchoolClass.deleted_at.is_(None),
+    ).first()
+    if not school_class:
+        raise HTTPException(status_code=404, detail="Class not found.")
+
+    raw_teacher_id = payload.get("teacher_id") or payload.get("teacher_user_id")
+    if not raw_teacher_id:
+        raise HTTPException(status_code=422, detail="A teacher id is required.")
+
+    try:
+        teacher_id = UUID(str(raw_teacher_id))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Invalid teacher id.")
+
+    teacher = db.query(Teacher).filter(
+        Teacher.deleted_at.is_(None),
+        (Teacher.id == teacher_id) | (Teacher.user_id == teacher_id),
+    ).first()
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher profile not found.")
+
+    teacher_user = db.query(User).filter(
+        User.id == teacher.user_id,
+        User.deleted_at.is_(None),
+    ).first()
+    if not teacher_user:
+        raise HTTPException(status_code=404, detail="The teacher's user account was not found.")
+
+    # Remove the class from the previous teacher's many-to-many assignment
+    # when changing the class teacher, while preserving the new assignment.
+    previous_teacher = None
+    if school_class.class_teacher_id and school_class.class_teacher_id != teacher.user_id:
+        previous_teacher = db.query(Teacher).filter(
+            Teacher.user_id == school_class.class_teacher_id,
+            Teacher.deleted_at.is_(None),
+        ).first()
+        if previous_teacher and school_class in previous_teacher.classes:
+            previous_teacher.classes.remove(school_class)
+
+    school_class.class_teacher_id = teacher.user_id
+    if school_class not in teacher.classes:
+        teacher.classes.append(school_class)
+
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Unable to assign the class teacher.")
+
+    return ApiResponse(
+        success=True,
+        message=f"{teacher_user.full_name} is now the class teacher for {school_class.name}.",
+        data={"class_id": str(school_class.id), "teacher_id": str(teacher.id), "teacher_user_id": str(teacher.user_id)},
+    )
+
+
 @router.patch("/classes/{class_id}", response_model=ApiResponse)
 def update_class(
     class_id: UUID,
@@ -265,29 +338,13 @@ def update_class(
         ).first()
         if not teacher_user:
             raise HTTPException(status_code=404, detail="That teacher's user account was not found.")
-        if not any(r.name == "teacher" for r in teacher_user.roles):
+        if not any(r.name in {"teacher", "class_teacher"} for r in teacher_user.roles):
             raise HTTPException(status_code=422, detail="That user account does not have the teacher role.")
-
-        # The class-teacher field must point to a real active Teacher profile,
-        # not merely a user account carrying the teacher role.
-        from app.models.people import Teacher
-        teacher_profile = db.query(Teacher).filter(
-            Teacher.user_id == teacher_user.id,
-            Teacher.deleted_at.is_(None),
-        ).first()
-        if not teacher_profile:
-            raise HTTPException(
-                status_code=409,
-                detail="This teacher account does not have an active teacher profile.",
-            )
 
     for field, value in data.items():
         setattr(school_class, field, value)
     db.commit()
-    return ApiResponse(
-        success=True,
-        message="Class teacher assigned." if data.get("class_teacher_id") else "Class updated.",
-    )
+    return ApiResponse(success=True, message="Class updated.")
 
 
 @router.delete("/classes/{class_id}", response_model=ApiResponse)
