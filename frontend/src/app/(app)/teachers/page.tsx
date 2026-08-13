@@ -59,7 +59,7 @@ function AssignClassModal({ teacher, onClose }: { teacher: Teacher; onClose: () 
     }
     setIsSubmitting(true);
     try {
-      await apiClient.post(`/school-setup/classes/${classId}/assign-teacher`, { teacher_id: teacher.id });
+      await apiClient.post(`/school-setup/classes/${classId}/assign-teacher`, { teacher_id: teacher.id, teacher_user_id: teacher.user_id });
       toast.success(`${teacher.full_name} is now the class teacher for ${selectedClass?.name}.`);
       queryClient.invalidateQueries({ queryKey: ["school-classes"] });
       onClose();
