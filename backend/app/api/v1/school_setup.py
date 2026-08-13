@@ -6,8 +6,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import require_permission, require_role
+from app.models.people import Teacher
 from app.database.session import get_db
-from app.models.people import Teacher, teacher_classes
 from app.models.school import (
     AcademicSession,
     AcademicTerm,
@@ -70,6 +70,12 @@ class SchoolClassUpdateIn(BaseModel):
     class_teacher_id: Optional[UUID] = None
     capacity: Optional[int] = None
     status: Optional[str] = None
+
+
+class AssignClassTeacherIn(BaseModel):
+    # Accept either a Teacher profile ID or the linked User ID.
+    teacher_id: Optional[UUID] = None
+    teacher_user_id: Optional[UUID] = None
 
 
 class SubjectIn(BaseModel):
@@ -242,75 +248,108 @@ def create_class(
     return ApiResponse(success=True, message="Class created.", data={"id": str(school_class.id)})
 
 
-@router.post("/classes/{class_id}/assign-teacher", response_model=ApiResponse)
-def assign_class_teacher(
-    class_id: UUID,
-    payload: dict,
-    db: Session = Depends(get_db),
-    _user=Depends(require_permission("classes.edit")),
-):
-    """Assign a teacher profile as the class teacher.
+def _resolve_teacher_for_assignment(db: Session, teacher_id: Optional[UUID], teacher_user_id: Optional[UUID]):
+    """Resolve the teacher profile and linked user from either identifier.
 
-    The UI has historically had two different teacher identifiers available:
-    the Teacher profile id and the linked User id. Accept either one, resolve
-    it to the Teacher profile, then persist the User id in classes.class_teacher_id
-    (the database FK points to users.id) and the Teacher<->Class association.
+    The database stores classes.class_teacher_id as users.id, while the
+    Teachers screen works with teachers.id. Supporting both prevents the
+    assignment UI from breaking when it passes one or the other.
     """
-    school_class = db.query(SchoolClass).filter(
-        SchoolClass.id == class_id,
-        SchoolClass.deleted_at.is_(None),
-    ).first()
-    if not school_class:
-        raise HTTPException(status_code=404, detail="Class not found.")
-
-    raw_teacher_id = payload.get("teacher_id") or payload.get("teacher_user_id")
-    if not raw_teacher_id:
+    candidate_ids = [x for x in (teacher_id, teacher_user_id) if x]
+    if not candidate_ids:
         raise HTTPException(status_code=422, detail="A teacher id is required.")
 
-    try:
-        teacher_id = UUID(str(raw_teacher_id))
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=422, detail="Invalid teacher id.")
+    teacher = None
+    for candidate in candidate_ids:
+        teacher = db.query(Teacher).filter(
+            Teacher.id == candidate, Teacher.deleted_at.is_(None)
+        ).first()
+        if teacher:
+            break
+        teacher = db.query(Teacher).filter(
+            Teacher.user_id == candidate, Teacher.deleted_at.is_(None)
+        ).first()
+        if teacher:
+            break
 
-    teacher = db.query(Teacher).filter(
-        Teacher.deleted_at.is_(None),
-        (Teacher.id == teacher_id) | (Teacher.user_id == teacher_id),
-    ).first()
-    if not teacher:
-        raise HTTPException(status_code=404, detail="Teacher profile not found.")
+    # Even if the Teacher profile is missing, allow a valid teacher-role user
+    # to become the class teacher. This is important for existing records that
+    # were created before the teacher profile was linked correctly.
+    if teacher:
+        teacher_user = db.query(User).filter(
+            User.id == teacher.user_id, User.deleted_at.is_(None)
+        ).first()
+        if not teacher_user:
+            raise HTTPException(status_code=404, detail="The teacher's user account was not found.")
+        return teacher, teacher_user
 
-    teacher_user = db.query(User).filter(
-        User.id == teacher.user_id,
-        User.deleted_at.is_(None),
-    ).first()
-    if not teacher_user:
-        raise HTTPException(status_code=404, detail="The teacher's user account was not found.")
+    for candidate in candidate_ids:
+        teacher_user = db.query(User).filter(
+            User.id == candidate, User.deleted_at.is_(None)
+        ).first()
+        if teacher_user:
+            role_names = {r.name for r in teacher_user.roles}
+            if "teacher" in role_names or "class_teacher" in role_names or "super_admin" in role_names:
+                return None, teacher_user
 
-    # Remove the class from the previous teacher's many-to-many assignment
-    # when changing the class teacher, while preserving the new assignment.
-    previous_teacher = None
-    if school_class.class_teacher_id and school_class.class_teacher_id != teacher.user_id:
+    raise HTTPException(status_code=404, detail="Teacher profile or teacher user account not found.")
+
+
+def _assign_class_teacher(db: Session, school_class: SchoolClass, teacher, teacher_user: User):
+    previous_user_id = school_class.class_teacher_id
+
+    # Remove this class from the previous teacher's explicit class list.
+    if previous_user_id and previous_user_id != teacher_user.id:
         previous_teacher = db.query(Teacher).filter(
-            Teacher.user_id == school_class.class_teacher_id,
-            Teacher.deleted_at.is_(None),
+            Teacher.user_id == previous_user_id, Teacher.deleted_at.is_(None)
         ).first()
         if previous_teacher and school_class in previous_teacher.classes:
             previous_teacher.classes.remove(school_class)
 
-    school_class.class_teacher_id = teacher.user_id
-    if school_class not in teacher.classes:
+    school_class.class_teacher_id = teacher_user.id
+
+    # Keep the teacher <-> class association synchronized when a Teacher
+    # profile exists. The class_teacher_id FK remains the source of truth for
+    # the actual class-teacher relationship.
+    if teacher is not None and school_class not in teacher.classes:
         teacher.classes.append(school_class)
 
+    db.commit()
+    db.refresh(school_class)
+
+
+@router.post("/classes/{class_id}/assign-teacher", response_model=ApiResponse)
+def assign_class_teacher(
+    class_id: UUID,
+    payload: AssignClassTeacherIn,
+    db: Session = Depends(get_db),
+    _user=Depends(require_permission("classes.edit")),
+):
+    school_class = db.query(SchoolClass).filter(
+        SchoolClass.id == class_id, SchoolClass.deleted_at.is_(None)
+    ).first()
+    if not school_class:
+        raise HTTPException(status_code=404, detail="Class not found.")
+
+    teacher, teacher_user = _resolve_teacher_for_assignment(
+        db, payload.teacher_id, payload.teacher_user_id
+    )
     try:
-        db.commit()
-    except Exception:
+        _assign_class_teacher(db, school_class, teacher, teacher_user)
+    except HTTPException:
+        raise
+    except Exception as exc:
         db.rollback()
-        raise HTTPException(status_code=500, detail="Unable to assign the class teacher.")
+        raise HTTPException(status_code=500, detail=f"Unable to assign the class teacher: {exc}")
 
     return ApiResponse(
         success=True,
         message=f"{teacher_user.full_name} is now the class teacher for {school_class.name}.",
-        data={"class_id": str(school_class.id), "teacher_id": str(teacher.id), "teacher_user_id": str(teacher.user_id)},
+        data={
+            "class_id": str(school_class.id),
+            "teacher_id": str(teacher.id) if teacher else None,
+            "teacher_user_id": str(teacher_user.id),
+        },
     )
 
 
@@ -321,10 +360,6 @@ def update_class(
     db: Session = Depends(get_db),
     _user=Depends(require_permission("classes.edit")),
 ):
-    """Mainly used to assign (or change) the class teacher for a class,
-    e.g. making Teacher 1 the class teacher for JSS 1. Once assigned, that
-    teacher becomes the contact parents and students of that class see in
-    Messaging."""
     school_class = db.query(SchoolClass).filter(
         SchoolClass.id == class_id, SchoolClass.deleted_at.is_(None)
     ).first()
@@ -332,14 +367,26 @@ def update_class(
         raise HTTPException(status_code=404, detail="Class not found.")
 
     data = payload.model_dump(exclude_unset=True)
-    if data.get("class_teacher_id") is not None:
-        teacher_user = db.query(User).filter(
-            User.id == data["class_teacher_id"], User.deleted_at.is_(None)
-        ).first()
-        if not teacher_user:
-            raise HTTPException(status_code=404, detail="That teacher's user account was not found.")
-        if not any(r.name in {"teacher", "class_teacher"} for r in teacher_user.roles):
-            raise HTTPException(status_code=422, detail="That user account does not have the teacher role.")
+
+    if "class_teacher_id" in data:
+        teacher_user_id = data.pop("class_teacher_id")
+        if teacher_user_id is None:
+            previous_user_id = school_class.class_teacher_id
+            if previous_user_id:
+                previous_teacher = db.query(Teacher).filter(
+                    Teacher.user_id == previous_user_id, Teacher.deleted_at.is_(None)
+                ).first()
+                if previous_teacher and school_class in previous_teacher.classes:
+                    previous_teacher.classes.remove(school_class)
+            school_class.class_teacher_id = None
+            db.commit()
+        else:
+            teacher, teacher_user = _resolve_teacher_for_assignment(db, None, teacher_user_id)
+            try:
+                _assign_class_teacher(db, school_class, teacher, teacher_user)
+            except Exception as exc:
+                db.rollback()
+                raise HTTPException(status_code=500, detail=f"Unable to assign the class teacher: {exc}")
 
     for field, value in data.items():
         setattr(school_class, field, value)
