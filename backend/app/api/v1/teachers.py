@@ -3,6 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, require_permission
@@ -119,7 +120,14 @@ def create_teacher(
         department_id=payload.department_id, employment_date=payload.employment_date, employment_status="active",
     )
     db.add(teacher)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Belt-and-suspenders: if two requests raced past the check above
+        # (e.g. a double-tap on a slow connection), the database's unique
+        # index is the real backstop — surface it as a clean 409, not a 500.
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That account is already linked to a teacher profile.")
     db.refresh(teacher)
     return ApiResponse(success=True, message="Teacher profile created.", data={"id": str(teacher.id)})
 

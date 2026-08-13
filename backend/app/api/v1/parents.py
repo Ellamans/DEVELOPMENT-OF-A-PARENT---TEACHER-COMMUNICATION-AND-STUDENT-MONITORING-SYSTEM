@@ -2,6 +2,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, require_permission
@@ -132,7 +133,11 @@ def create_parent(
 
     parent = Parent(**payload.model_dump())
     db.add(parent)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That account is already linked to a parent profile.")
     db.refresh(parent)
     return ApiResponse(success=True, message="Parent created.", data={"id": str(parent.id)})
 

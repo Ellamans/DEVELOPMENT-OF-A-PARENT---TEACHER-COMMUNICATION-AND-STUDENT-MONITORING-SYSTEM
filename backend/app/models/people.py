@@ -30,7 +30,7 @@ teacher_classes = Table(
 class Student(BaseModel):
     __tablename__ = "students"
 
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)  # optional login account
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)  # optional login account — uniqueness enforced by a partial index (active rows only), see migration f2b7a4c91d33
     admission_number = Column(String(30), unique=True, nullable=False, index=True)
     first_name = Column(String(100), nullable=False)
     middle_name = Column(String(100), nullable=True)
@@ -69,7 +69,7 @@ class Student(BaseModel):
 class Parent(BaseModel):
     __tablename__ = "parents"
 
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)  # uniqueness enforced by a partial index (active rows only), see migration f2b7a4c91d33
     full_name = Column(String(255), nullable=False)
     email = Column(String(255), nullable=True, index=True)
     phone_number = Column(String(20), nullable=True, index=True)
@@ -84,7 +84,7 @@ class Parent(BaseModel):
 class Teacher(BaseModel):
     __tablename__ = "teachers"
 
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)  # uniqueness enforced by a partial index (active rows only), see migration f2b7a4c91d33
     employee_id = Column(String(30), unique=True, nullable=False, index=True)
     qualification = Column(String(255), nullable=True)
     department_id = Column(UUID(as_uuid=True), ForeignKey("departments.id"), nullable=True)

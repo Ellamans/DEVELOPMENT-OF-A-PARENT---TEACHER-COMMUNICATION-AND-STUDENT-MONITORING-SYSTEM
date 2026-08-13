@@ -2,6 +2,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, require_permission
@@ -129,7 +130,11 @@ def create_student(
     data = payload.model_dump(exclude={"admission_number"})
     student = Student(admission_number=admission_number, status="active", **data)
     db.add(student)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="That account is already linked to a student profile.")
     db.refresh(student)
     return ApiResponse(success=True, message="Student created.", data={"id": str(student.id)})
 
