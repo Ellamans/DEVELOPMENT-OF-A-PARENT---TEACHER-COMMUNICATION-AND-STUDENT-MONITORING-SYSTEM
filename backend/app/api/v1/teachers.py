@@ -5,14 +5,45 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import require_permission
+from app.auth.dependencies import get_current_user, require_permission
 from app.database.session import get_db
-from app.models.people import Teacher, teacher_classes, teacher_subjects
-from app.models.school import ClassArm, Subject
+from app.models.people import Parent, Student, Teacher, student_parents, teacher_classes, teacher_subjects
+from app.models.school import ClassArm, SchoolClass, Subject
 from app.models.user import User
 from app.schemas.auth import ApiResponse
 
 router = APIRouter(prefix="/teachers", tags=["Teacher Management"])
+
+
+@router.get("/me/classes")
+def my_classes(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """
+    The classes where the logged-in teacher is THE class teacher, each with a
+    full roster — every student in that class plus their linked parents — so
+    a teacher can find who to message without needing anyone's raw account ID.
+    """
+    classes = db.query(SchoolClass).filter(SchoolClass.class_teacher_id == user.id, SchoolClass.deleted_at.is_(None)).all()
+
+    result = []
+    for school_class in classes:
+        students = db.query(Student).filter(Student.current_class_id == school_class.id, Student.deleted_at.is_(None)).all()
+        roster = []
+        for s in students:
+            parents = [
+                {"id": p.id, "user_id": p.user_id, "full_name": p.full_name, "relationship_type": rel}
+                for p, rel in (
+                    db.query(Parent, student_parents.c.relationship_type)
+                    .join(student_parents, student_parents.c.parent_id == Parent.id)
+                    .filter(student_parents.c.student_id == s.id)
+                    .all()
+                )
+            ]
+            roster.append({
+                "id": s.id, "user_id": s.user_id, "full_name": s.full_name,
+                "admission_number": s.admission_number, "parents": parents,
+            })
+        result.append({"class_id": school_class.id, "class_name": school_class.name, "roster": roster})
+    return {"success": True, "data": result}
 
 
 class TeacherIn(BaseModel):

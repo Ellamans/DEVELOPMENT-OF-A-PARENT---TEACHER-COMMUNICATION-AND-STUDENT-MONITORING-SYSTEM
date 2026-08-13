@@ -10,7 +10,7 @@ from app.auth.dependencies import get_current_user
 from app.database.session import get_db
 from app.models.communication import Conversation, Message, conversation_members
 from app.models.people import Parent, Student, Teacher
-from app.models.school import ClassArm, SchoolClass
+from app.models.school import SchoolClass
 from app.models.user import User
 from app.schemas.auth import ApiResponse
 
@@ -49,48 +49,47 @@ def list_my_contacts(db: Session = Depends(get_db), user: User = Depends(get_cur
                 "context": [context],
             }
 
-    def class_arm_label(arm: ClassArm) -> str:
-        school_class = db.query(SchoolClass).filter(SchoolClass.id == arm.class_id).first()
-        return f"{school_class.name} {arm.name}" if school_class else arm.name
+    def class_label(school_class: SchoolClass) -> str:
+        return school_class.name
 
     # Parent -> their children's class teachers
     if "parent" in role_names:
         parent = db.query(Parent).filter(Parent.user_id == user.id, Parent.deleted_at.is_(None)).first()
         if parent:
             for child in parent.students:
-                if child.deleted_at is not None or not child.class_arm_id:
+                if child.deleted_at is not None or not child.current_class_id:
                     continue
-                arm = db.query(ClassArm).filter(ClassArm.id == child.class_arm_id).first()
-                if arm and arm.class_teacher_id:
-                    teacher_user = db.query(User).filter(User.id == arm.class_teacher_id).first()
+                school_class = db.query(SchoolClass).filter(SchoolClass.id == child.current_class_id).first()
+                if school_class and school_class.class_teacher_id:
+                    teacher_user = db.query(User).filter(User.id == school_class.class_teacher_id).first()
                     if teacher_user:
                         add_contact(
                             teacher_user.id, teacher_user.full_name, "Class Teacher",
-                            f"{class_arm_label(arm)} — {child.full_name}'s class teacher",
+                            f"{class_label(school_class)} — {child.full_name}'s class teacher",
                         )
 
     # Student -> their own class teacher
     if "student" in role_names:
         student = db.query(Student).filter(Student.user_id == user.id, Student.deleted_at.is_(None)).first()
-        if student and student.class_arm_id:
-            arm = db.query(ClassArm).filter(ClassArm.id == student.class_arm_id).first()
-            if arm and arm.class_teacher_id:
-                teacher_user = db.query(User).filter(User.id == arm.class_teacher_id).first()
+        if student and student.current_class_id:
+            school_class = db.query(SchoolClass).filter(SchoolClass.id == student.current_class_id).first()
+            if school_class and school_class.class_teacher_id:
+                teacher_user = db.query(User).filter(User.id == school_class.class_teacher_id).first()
                 if teacher_user:
                     add_contact(
                         teacher_user.id, teacher_user.full_name, "Class Teacher",
-                        f"{class_arm_label(arm)} — your class teacher",
+                        f"{class_label(school_class)} — your class teacher",
                     )
 
-    # Teacher -> students & parents of any class arm(s) they are class teacher for
+    # Teacher -> students & parents of any class(es) they are class teacher for
     if {"teacher", "class_teacher"} & role_names:
-        arms = db.query(ClassArm).filter(
-            ClassArm.class_teacher_id == user.id, ClassArm.deleted_at.is_(None)
+        classes = db.query(SchoolClass).filter(
+            SchoolClass.class_teacher_id == user.id, SchoolClass.deleted_at.is_(None)
         ).all()
-        for arm in arms:
-            label = class_arm_label(arm)
+        for school_class in classes:
+            label = class_label(school_class)
             students = db.query(Student).filter(
-                Student.class_arm_id == arm.id, Student.deleted_at.is_(None)
+                Student.current_class_id == school_class.id, Student.deleted_at.is_(None)
             ).all()
             for s in students:
                 if s.user_id:

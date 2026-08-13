@@ -25,13 +25,25 @@ def list_my_children(db: Session = Depends(get_db), user: User = Depends(get_cur
     if not parent:
         return {"success": True, "data": [], "message": "No parent profile linked to this account yet."}
 
-    children = [
-        {
+    from app.models.school import SchoolClass
+
+    active_children = [s for s in parent.students if s.deleted_at is None]
+    class_ids = {s.current_class_id for s in active_children if s.current_class_id}
+    classes_by_id = {c.id: c for c in db.query(SchoolClass).filter(SchoolClass.id.in_(class_ids)).all()} if class_ids else {}
+    teacher_ids = {c.class_teacher_id for c in classes_by_id.values() if c.class_teacher_id}
+    teachers_by_id = {u.id: u for u in db.query(User).filter(User.id.in_(teacher_ids)).all()} if teacher_ids else {}
+
+    children = []
+    for s in active_children:
+        school_class = classes_by_id.get(s.current_class_id)
+        teacher = teachers_by_id.get(school_class.class_teacher_id) if school_class and school_class.class_teacher_id else None
+        children.append({
             "id": s.id, "full_name": s.full_name, "admission_number": s.admission_number,
-            "status": s.status, "class_arm_id": s.class_arm_id,
-        }
-        for s in parent.students if s.deleted_at is None
-    ]
+            "status": s.status, "current_class_id": s.current_class_id,
+            "class_name": school_class.name if school_class else None,
+            "class_teacher_id": teacher.id if teacher else None,
+            "class_teacher_name": f"{teacher.first_name} {teacher.last_name}" if teacher else None,
+        })
     return {"success": True, "data": children}
 
 

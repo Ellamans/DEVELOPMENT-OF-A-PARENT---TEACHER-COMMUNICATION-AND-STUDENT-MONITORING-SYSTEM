@@ -207,7 +207,20 @@ def create_department(
 
 @router.get("/classes")
 def list_classes(db: Session = Depends(get_db)):
-    return {"success": True, "data": db.query(SchoolClass).filter(SchoolClass.deleted_at.is_(None)).all()}
+    classes = db.query(SchoolClass).filter(SchoolClass.deleted_at.is_(None)).all()
+    teacher_ids = [c.class_teacher_id for c in classes if c.class_teacher_id]
+    teachers_by_id = {u.id: u for u in db.query(User).filter(User.id.in_(teacher_ids)).all()} if teacher_ids else {}
+    return {"success": True, "data": [
+        {
+            "id": c.id, "name": c.name, "level": c.level, "status": c.status,
+            "class_teacher_id": c.class_teacher_id,
+            "class_teacher_name": (
+                f"{teachers_by_id[c.class_teacher_id].first_name} {teachers_by_id[c.class_teacher_id].last_name}"
+                if c.class_teacher_id in teachers_by_id else None
+            ),
+        }
+        for c in classes
+    ]}
 
 
 @router.post("/classes", response_model=ApiResponse, status_code=201)
@@ -221,6 +234,32 @@ def create_class(
     db.add(SchoolClass(**payload.model_dump()))
     db.commit()
     return ApiResponse(success=True, message="Class created.")
+
+
+class ClassUpdateIn(BaseModel):
+    class_teacher_id: Optional[UUID] = None
+
+
+@router.patch("/classes/{class_id}", response_model=ApiResponse)
+def update_class(
+    class_id: UUID, payload: ClassUpdateIn, db: Session = Depends(get_db),
+    _user=Depends(require_permission("classes.create")),
+):
+    """Mainly used to assign a class teacher directly to a class (e.g. JSS 1),
+    without needing a class arm. That teacher becomes the contact parents and
+    students of that class see in Messaging."""
+    school_class = db.query(SchoolClass).filter(SchoolClass.id == class_id, SchoolClass.deleted_at.is_(None)).first()
+    if not school_class:
+        raise HTTPException(status_code=404, detail="Class not found.")
+    if payload.class_teacher_id:
+        teacher_user = db.query(User).filter(User.id == payload.class_teacher_id, User.deleted_at.is_(None)).first()
+        if not teacher_user:
+            raise HTTPException(status_code=404, detail="That user account was not found.")
+        if not any(r.name in {"teacher", "class_teacher"} for r in teacher_user.roles):
+            raise HTTPException(status_code=422, detail="That user account does not have the teacher role.")
+    school_class.class_teacher_id = payload.class_teacher_id
+    db.commit()
+    return ApiResponse(success=True, message="Class teacher assigned.")
 
 
 def _serialize_class_arm(db: Session, arm: ClassArm) -> dict:

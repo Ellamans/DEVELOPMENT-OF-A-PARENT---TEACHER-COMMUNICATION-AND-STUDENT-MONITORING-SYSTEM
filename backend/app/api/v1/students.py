@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.auth.dependencies import require_permission
+from app.auth.dependencies import get_current_user, require_permission
 from app.database.session import get_db
 from app.models.people import EmergencyContact, Parent, Student, StudentDocument, student_parents
 from app.models.school import ClassArm, SchoolClass
@@ -132,6 +132,30 @@ def create_student(
     db.commit()
     db.refresh(student)
     return ApiResponse(success=True, message="Student created.", data={"id": str(student.id)})
+
+
+@router.get("/me")
+def get_my_student_profile(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    """A student's own view of their profile, class, and class teacher —
+    scoped to the logged-in account, no students.view permission needed."""
+    student = db.query(Student).filter(Student.user_id == current_user.id, Student.deleted_at.is_(None)).first()
+    if not student:
+        return {"success": True, "data": None, "message": "No student profile linked to this account yet."}
+
+    class_info = _class_lookup(db, [student]).get(student.id, {"class_name": None, "full_class_name": None})
+    class_teacher = None
+    if student.current_class_id:
+        school_class = db.query(SchoolClass).filter(SchoolClass.id == student.current_class_id).first()
+        if school_class and school_class.class_teacher_id:
+            teacher_user = db.query(User).filter(User.id == school_class.class_teacher_id).first()
+            if teacher_user:
+                class_teacher = {"user_id": teacher_user.id, "full_name": teacher_user.full_name}
+
+    return {"success": True, "data": {
+        "id": student.id, "full_name": student.full_name, "admission_number": student.admission_number,
+        "status": student.status, "class_name": class_info.get("full_class_name") or class_info.get("class_name"),
+        "class_teacher": class_teacher,
+    }}
 
 
 @router.get("/{student_id}")

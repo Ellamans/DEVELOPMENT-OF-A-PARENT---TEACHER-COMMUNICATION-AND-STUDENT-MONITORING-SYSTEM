@@ -58,6 +58,7 @@ class SchoolClass(BaseModel):
 
     name = Column(String(50), nullable=False)  # e.g. JSS1, SS2
     level = Column(String(20), nullable=False)  # junior, senior
+    class_teacher_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     status = Column(String(20), default="active", nullable=False)
 
     arms = relationship("ClassArm", back_populates="school_class", cascade="all, delete-orphan")
