@@ -4,6 +4,8 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
@@ -53,7 +55,9 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     if payload.role not in ALLOWED_SELF_REGISTER_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role for self-registration.")
 
-    if db.query(User).filter(User.email == payload.email, User.deleted_at.is_(None)).first():
+    # Compare case-insensitively so "Jane@x.com" can't slip past a check that
+    # only ever saw "jane@x.com" and end up creating a second account.
+    if db.query(User).filter(func.lower(User.email) == payload.email, User.deleted_at.is_(None)).first():
         raise HTTPException(status_code=409, detail="A user with this email already exists.")
 
     if payload.phone_number and db.query(User).filter(
@@ -83,7 +87,15 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     )
     user.roles.append(role)
     db.add(user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # Two near-simultaneous submits (e.g. a double-click) can both pass the
+        # check above before either has committed. The DB's unique constraint
+        # is the final backstop — surface it as a normal duplicate-email error
+        # instead of a raw 500.
+        db.rollback()
+        raise HTTPException(status_code=409, detail="A user with this email already exists.")
     db.refresh(user)
 
     # A User account is a login credential; Student/Parent rows are the
@@ -128,7 +140,7 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit("10/minute")
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == payload.email, User.deleted_at.is_(None)).first()
+    user = db.query(User).filter(func.lower(User.email) == payload.email, User.deleted_at.is_(None)).first()
 
     if user and user.locked_until and user.locked_until > datetime.now(timezone.utc):
         raise HTTPException(status_code=423, detail="Account temporarily locked due to failed login attempts.")

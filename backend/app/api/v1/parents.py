@@ -2,6 +2,7 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user, require_permission
@@ -106,7 +107,12 @@ def create_parent(
     db: Session = Depends(get_db),
     _user: User = Depends(require_permission("parents.create")),
 ):
-    if payload.email and db.query(Parent).filter(Parent.email == payload.email, Parent.deleted_at.is_(None)).first():
+    # Compare case-insensitively — "Jane@x.com" and "jane@x.com" are the same
+    # address, and an exact-match check lets a second, duplicate record through.
+    normalized_email = payload.email.strip().lower() if payload.email else None
+    if normalized_email and db.query(Parent).filter(
+        func.lower(Parent.email) == normalized_email, Parent.deleted_at.is_(None)
+    ).first():
         raise HTTPException(status_code=409, detail="A parent with this email already exists — link the existing record instead.")
 
     if payload.user_id:
@@ -118,7 +124,9 @@ def create_parent(
         if db.query(Parent).filter(Parent.user_id == payload.user_id, Parent.deleted_at.is_(None)).first():
             raise HTTPException(status_code=409, detail="That account is already linked to a parent profile.")
 
-    parent = Parent(**payload.model_dump())
+    parent_data = payload.model_dump()
+    parent_data["email"] = normalized_email
+    parent = Parent(**parent_data)
     db.add(parent)
     db.commit()
     db.refresh(parent)
