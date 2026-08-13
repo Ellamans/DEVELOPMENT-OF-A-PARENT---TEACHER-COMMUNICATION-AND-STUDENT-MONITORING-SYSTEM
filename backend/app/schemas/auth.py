@@ -16,11 +16,24 @@ class RegisterRequest(BaseModel):
     date_of_birth: Optional[date] = None
     role: str  # role name to assign, validated server-side against allowed roles
 
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        # Emails are case-insensitive by spec; without this, "Jane@x.com" and
+        # "jane@x.com" pass the duplicate-email check as two different values
+        # and end up creating two accounts for the same person.
+        return v.strip().lower()
+
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
     remember_me: bool = False
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        return v.strip().lower()
 
 
 class TokenResponse(BaseModel):
@@ -35,6 +48,11 @@ class RefreshRequest(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        return v.strip().lower()
 
 
 class ResetPasswordRequest(BaseModel):
