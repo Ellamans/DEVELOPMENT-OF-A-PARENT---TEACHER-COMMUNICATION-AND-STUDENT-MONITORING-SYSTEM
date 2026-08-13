@@ -283,28 +283,19 @@ function ClassesTab() {
   });
 
   // The class teacher field on a class stores a user ID directly, so we
-  // Pull actual Teacher profiles. A class stores the linked User ID, so
-  // using active teacher profiles prevents assigning an arbitrary user that
-  // only happens to have the teacher role.
-  const teachersQuery = useQuery({
-    queryKey: ["teacher-profiles-for-class-assignment"],
+  // pull user accounts with the "teacher" role for the assignment dropdown.
+  const usersQuery = useQuery({
+    queryKey: ["users-teacher-role"],
     queryFn: async () => {
-      const { data } = await apiClient.get("/teachers", { params: { page: 1, page_size: 100 } });
-      return data.data as {
-        id: string;
-        user_id: string;
-        full_name: string | null;
-        email: string | null;
-      }[];
+      const { data } = await apiClient.get("/users", { params: { role: "teacher", page_size: 100 } });
+      return data.data as { id: string; first_name: string; last_name: string; email: string }[];
     },
   });
 
   const teacherUserOptions = useMemo(() => {
-    return (teachersQuery.data ?? []).map((t) => ({
-      user_id: t.user_id,
-      name: t.full_name || t.email || "Unnamed teacher",
-    }));
-  }, [teachersQuery.data]);
+    const users = usersQuery.data ?? [];
+    return users.map((u) => ({ user_id: u.id, name: `${u.first_name} ${u.last_name}` }));
+  }, [usersQuery.data]);
 
   async function addClass(e: React.FormEvent) {
     e.preventDefault();
@@ -329,9 +320,15 @@ function ClassesTab() {
   async function assignClassTeacher(classId: string, teacherUserId: string) {
     setSavingClassId(classId);
     try {
-      await apiClient.patch(`/school-setup/classes/${classId}`, {
-        class_teacher_id: teacherUserId || null,
-      });
+      if (!teacherUserId) {
+        await apiClient.patch(`/school-setup/classes/${classId}`, {
+          class_teacher_id: null,
+        });
+      } else {
+        await apiClient.post(`/school-setup/classes/${classId}/assign-teacher`, {
+          teacher_user_id: teacherUserId,
+        });
+      }
       toast.success(teacherUserId ? "Class teacher assigned." : "Class teacher removed.");
       queryClient.invalidateQueries({ queryKey: ["school-classes"] });
     } catch (err: any) {
