@@ -1,430 +1,64 @@
-from typing import Optional
-from uuid import UUID
-
-from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from typing import List, Optional
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
-from app.auth.dependencies import require_permission, require_role
-from app.models.people import Teacher
 from app.database.session import get_db
-from app.models.school import (
-    AcademicSession,
-    AcademicTerm,
-    Department,
-    SchoolClass,
-    SchoolProfile,
-    Subject,
-)
+from app.models.school import Class
+from app.models.people import Teacher
 from app.models.user import User
-from app.schemas.auth import ApiResponse
-
-router = APIRouter(prefix="/school-setup", tags=["School Setup"])
-
-
-# ---------- Schemas ----------
-
-class SchoolProfileIn(BaseModel):
-    name: str
-    motto: Optional[str] = None
-    email: Optional[str] = None
-    phone: Optional[str] = None
-    website: Optional[str] = None
-    address: Optional[str] = None
-    city: Optional[str] = None
-    state: Optional[str] = None
-    country: str = "Nigeria"
-    postal_code: Optional[str] = None
-    school_type: Optional[str] = None
-    school_level: Optional[str] = None
-    principal_name: Optional[str] = None
-    established_year: Optional[int] = None
-
-
-class AcademicSessionIn(BaseModel):
-    name: str
-
-
-class AcademicTermIn(BaseModel):
-    session_id: UUID
-    name: str
-    start_date: Optional[str] = None
-    end_date: Optional[str] = None
-
-
-class DepartmentIn(BaseModel):
-    name: str
-    description: Optional[str] = None
-
-
-class SchoolClassIn(BaseModel):
-    name: str  # e.g. "JSS 1", "JSS 2", "SS 3"
-    level: str
-    class_teacher_id: Optional[UUID] = None
-    capacity: int = 40
-
-
-class SchoolClassUpdateIn(BaseModel):
-    name: Optional[str] = None
-    level: Optional[str] = None
-    class_teacher_id: Optional[UUID] = None
-    capacity: Optional[int] = None
-    status: Optional[str] = None
-
-
-class AssignClassTeacherIn(BaseModel):
-    # Accept either a Teacher profile ID or the linked User ID.
-    teacher_id: Optional[UUID] = None
-    teacher_user_id: Optional[UUID] = None
-
-
-class SubjectIn(BaseModel):
-    name: str
-    code: Optional[str] = None
-    department_id: Optional[UUID] = None
-
-
-# ---------- School Profile ----------
-
-@router.get("/school-profile")
-def get_school_profile(db: Session = Depends(get_db)):
-    profile = db.query(SchoolProfile).filter(SchoolProfile.deleted_at.is_(None)).first()
-    if not profile:
-        return {"success": True, "data": None, "message": "School profile not yet configured."}
-    return {"success": True, "data": profile}
-
-
-@router.put("/school-profile", response_model=ApiResponse)
-def upsert_school_profile(
-    payload: SchoolProfileIn,
-    db: Session = Depends(get_db),
-    _user=Depends(require_role("super_admin", "school_administrator")),
-):
-    profile = db.query(SchoolProfile).filter(SchoolProfile.deleted_at.is_(None)).first()
-    if profile:
-        for field, value in payload.model_dump().items():
-            setattr(profile, field, value)
-    else:
-        profile = SchoolProfile(**payload.model_dump())
-        db.add(profile)
-    db.commit()
-    return ApiResponse(success=True, message="School profile saved.")
-
-
-# ---------- Academic Sessions ----------
-
-@router.get("/academic-sessions")
-def list_sessions(db: Session = Depends(get_db)):
-    sessions = db.query(AcademicSession).filter(AcademicSession.deleted_at.is_(None)).all()
-    return {"success": True, "data": sessions}
-
-
-@router.post("/academic-sessions", response_model=ApiResponse, status_code=201)
-def create_session(
-    payload: AcademicSessionIn,
-    db: Session = Depends(get_db),
-    _user=Depends(require_role("super_admin", "school_administrator")),
-):
-    if db.query(AcademicSession).filter(
-        AcademicSession.name == payload.name, AcademicSession.deleted_at.is_(None)
-    ).first():
-        raise HTTPException(status_code=409, detail="Academic session already exists.")
-    db.add(AcademicSession(name=payload.name))
-    db.commit()
-    return ApiResponse(success=True, message="Academic session created.")
-
-
-@router.patch("/academic-sessions/{session_id}/activate", response_model=ApiResponse)
-def activate_session(
-    session_id: UUID,
-    db: Session = Depends(get_db),
-    _user=Depends(require_role("super_admin", "school_administrator")),
-):
-    target = db.query(AcademicSession).filter(AcademicSession.id == session_id).first()
-    if not target:
-        raise HTTPException(status_code=404, detail="Session not found.")
-    db.query(AcademicSession).update({AcademicSession.is_active: False})
-    target.is_active = True
-    db.commit()
-    return ApiResponse(success=True, message=f"Session {target.name} is now active.")
-
-
-# ---------- Academic Terms ----------
-
-@router.get("/academic-terms")
-def list_terms(session_id: Optional[UUID] = Query(None), db: Session = Depends(get_db)):
-    q = db.query(AcademicTerm).filter(AcademicTerm.deleted_at.is_(None))
-    if session_id:
-        q = q.filter(AcademicTerm.session_id == session_id)
-    return {"success": True, "data": q.all()}
-
-
-@router.post("/academic-terms", response_model=ApiResponse, status_code=201)
-def create_term(
-    payload: AcademicTermIn,
-    db: Session = Depends(get_db),
-    _user=Depends(require_role("super_admin", "school_administrator")),
-):
-    db.add(AcademicTerm(**payload.model_dump()))
-    db.commit()
-    return ApiResponse(success=True, message="Academic term created.")
-
-
-@router.patch("/academic-terms/{term_id}/activate", response_model=ApiResponse)
-def activate_term(
-    term_id: UUID,
-    db: Session = Depends(get_db),
-    _user=Depends(require_role("super_admin", "school_administrator")),
-):
-    target = db.query(AcademicTerm).filter(AcademicTerm.id == term_id).first()
-    if not target:
-        raise HTTPException(status_code=404, detail="Term not found.")
-    db.query(AcademicTerm).filter(AcademicTerm.session_id == target.session_id).update({AcademicTerm.is_active: False})
-    target.is_active = True
-    db.commit()
-    return ApiResponse(success=True, message=f"Term {target.name} is now active.")
-
-
-# ---------- Departments ----------
-
-@router.get("/departments")
-def list_departments(db: Session = Depends(get_db)):
-    return {"success": True, "data": db.query(Department).filter(Department.deleted_at.is_(None)).all()}
-
-
-@router.post("/departments", response_model=ApiResponse, status_code=201)
-def create_department(
-    payload: DepartmentIn,
-    db: Session = Depends(get_db),
-    _user=Depends(require_permission("departments.create")),
-):
-    if db.query(Department).filter(Department.name == payload.name, Department.deleted_at.is_(None)).first():
-        raise HTTPException(status_code=409, detail="Department already exists.")
-    db.add(Department(**payload.model_dump()))
-    db.commit()
-    return ApiResponse(success=True, message="Department created.")
-
-
-# ---------- Classes ----------
-
-def _serialize_class(db: Session, school_class: SchoolClass) -> dict:
-    teacher_user = (
-        db.query(User).filter(User.id == school_class.class_teacher_id).first()
-        if school_class.class_teacher_id else None
-    )
-    return {
-        "id": school_class.id,
-        "name": school_class.name,
-        "level": school_class.level,
-        "capacity": school_class.capacity,
-        "status": school_class.status,
-        "class_teacher_id": school_class.class_teacher_id,
-        "class_teacher_name": teacher_user.full_name if teacher_user else None,
-    }
-
-
-@router.get("/classes")
-def list_classes(db: Session = Depends(get_db)):
-    classes = db.query(SchoolClass).filter(SchoolClass.deleted_at.is_(None)).order_by(SchoolClass.name).all()
-    return {"success": True, "data": [_serialize_class(db, c) for c in classes]}
-
-
-@router.post("/classes", response_model=ApiResponse, status_code=201)
-def create_class(
-    payload: SchoolClassIn,
-    db: Session = Depends(get_db),
-    _user=Depends(require_permission("classes.create")),
-):
-    if db.query(SchoolClass).filter(SchoolClass.name == payload.name, SchoolClass.deleted_at.is_(None)).first():
-        raise HTTPException(status_code=409, detail="Class already exists.")
-    if payload.class_teacher_id and not db.query(User).filter(
-        User.id == payload.class_teacher_id, User.deleted_at.is_(None)
-    ).first():
-        raise HTTPException(status_code=404, detail="That teacher's user account was not found.")
-    school_class = SchoolClass(**payload.model_dump())
-    db.add(school_class)
-    db.commit()
-    db.refresh(school_class)
-    return ApiResponse(success=True, message="Class created.", data={"id": str(school_class.id)})
-
-
-def _resolve_teacher_for_assignment(db: Session, teacher_id: Optional[UUID], teacher_user_id: Optional[UUID]):
-    """Resolve the teacher profile and linked user from either identifier.
-
-    The database stores classes.class_teacher_id as users.id, while the
-    Teachers screen works with teachers.id. Supporting both prevents the
-    assignment UI from breaking when it passes one or the other.
-    """
-    candidate_ids = [x for x in (teacher_id, teacher_user_id) if x]
-    if not candidate_ids:
-        raise HTTPException(status_code=422, detail="A teacher id is required.")
-
-    teacher = None
-    for candidate in candidate_ids:
-        teacher = db.query(Teacher).filter(
-            Teacher.id == candidate, Teacher.deleted_at.is_(None)
-        ).first()
-        if teacher:
-            break
-        teacher = db.query(Teacher).filter(
-            Teacher.user_id == candidate, Teacher.deleted_at.is_(None)
-        ).first()
-        if teacher:
-            break
-
-    # Even if the Teacher profile is missing, allow a valid teacher-role user
-    # to become the class teacher. This is important for existing records that
-    # were created before the teacher profile was linked correctly.
-    if teacher:
-        teacher_user = db.query(User).filter(
-            User.id == teacher.user_id, User.deleted_at.is_(None)
-        ).first()
-        if not teacher_user:
-            raise HTTPException(status_code=404, detail="The teacher's user account was not found.")
-        return teacher, teacher_user
-
-    for candidate in candidate_ids:
-        teacher_user = db.query(User).filter(
-            User.id == candidate, User.deleted_at.is_(None)
-        ).first()
-        if teacher_user:
-            role_names = {r.name for r in teacher_user.roles}
-            if "teacher" in role_names or "class_teacher" in role_names or "super_admin" in role_names:
-                return None, teacher_user
-
-    raise HTTPException(status_code=404, detail="Teacher profile or teacher user account not found.")
-
-
-def _assign_class_teacher(db: Session, school_class: SchoolClass, teacher, teacher_user: User):
-    previous_user_id = school_class.class_teacher_id
-
-    # Remove this class from the previous teacher's explicit class list.
-    if previous_user_id and previous_user_id != teacher_user.id:
-        previous_teacher = db.query(Teacher).filter(
-            Teacher.user_id == previous_user_id, Teacher.deleted_at.is_(None)
-        ).first()
-        if previous_teacher and school_class in previous_teacher.classes:
-            previous_teacher.classes.remove(school_class)
-
-    school_class.class_teacher_id = teacher_user.id
-
-    # Keep the teacher <-> class association synchronized when a Teacher
-    # profile exists. The class_teacher_id FK remains the source of truth for
-    # the actual class-teacher relationship.
-    if teacher is not None and school_class not in teacher.classes:
-        teacher.classes.append(school_class)
-
-    db.commit()
-    db.refresh(school_class)
-
-
-@router.post("/classes/{class_id}/assign-teacher", response_model=ApiResponse)
+from app.auth.dependencies import get_current_user
+
+router = APIRouter()
+
+class AssignTeacherSchema(BaseModel):
+    teacher_id: Optional[str] = None
+
+@router.get("/classes", response_model=List[dict])
+def get_classes(db: Session = Depends(get_db)):
+    classes = db.query(Class).all()
+    result = []
+    for c in classes:
+        teacher_name = None
+        if c.class_teacher_id:
+            teacher = db.query(Teacher).filter(Teacher.id == c.class_teacher_id).first()
+            if teacher and teacher.user:
+                teacher_name = teacher.user.full_name
+        result.append({
+            "id": str(c.id),
+            "name": c.name,
+            "grade_level": c.grade_level,
+            "capacity": c.capacity,
+            "class_teacher_id": str(c.class_teacher_id) if c.class_teacher_id else None,
+            "class_teacher_name": teacher_name
+        })
+    return result
+
+@router.post("/classes/{class_id}/assign-teacher")
+@router.patch("/classes/{class_id}/assign-teacher")
 def assign_class_teacher(
-    class_id: UUID,
-    payload: AssignClassTeacherIn,
+    class_id: str,
+    payload: AssignTeacherSchema,
     db: Session = Depends(get_db),
-    _user=Depends(require_permission("classes.edit")),
+    current_user: User = Depends(get_current_user)
 ):
-    school_class = db.query(SchoolClass).filter(
-        SchoolClass.id == class_id, SchoolClass.deleted_at.is_(None)
-    ).first()
-    if not school_class:
-        raise HTTPException(status_code=404, detail="Class not found.")
+    class_obj = db.query(Class).filter(Class.id == class_id).first()
+    if not class_obj:
+        raise HTTPException(status_code=404, detail="Class not found")
 
-    teacher, teacher_user = _resolve_teacher_for_assignment(
-        db, payload.teacher_id, payload.teacher_user_id
-    )
-    try:
-        _assign_class_teacher(db, school_class, teacher, teacher_user)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Unable to assign the class teacher: {exc}")
+    if not payload.teacher_id:
+        class_obj.class_teacher_id = None
+        db.commit()
+        return {"message": "Teacher unassigned successfully"}
 
-    return ApiResponse(
-        success=True,
-        message=f"{teacher_user.full_name} is now the class teacher for {school_class.name}.",
-        data={
-            "class_id": str(school_class.id),
-            "teacher_id": str(teacher.id) if teacher else None,
-            "teacher_user_id": str(teacher_user.id),
-        },
-    )
+    # Attempt lookup by Teacher profile ID first, fallback to User ID
+    teacher = db.query(Teacher).filter(Teacher.id == payload.teacher_id).first()
+    if not teacher:
+        teacher = db.query(Teacher).filter(Teacher.user_id == payload.teacher_id).first()
 
+    if not teacher:
+        raise HTTPException(status_code=404, detail="Teacher profile not found")
 
-@router.patch("/classes/{class_id}", response_model=ApiResponse)
-def update_class(
-    class_id: UUID,
-    payload: SchoolClassUpdateIn,
-    db: Session = Depends(get_db),
-    _user=Depends(require_permission("classes.edit")),
-):
-    school_class = db.query(SchoolClass).filter(
-        SchoolClass.id == class_id, SchoolClass.deleted_at.is_(None)
-    ).first()
-    if not school_class:
-        raise HTTPException(status_code=404, detail="Class not found.")
-
-    data = payload.model_dump(exclude_unset=True)
-
-    if "class_teacher_id" in data:
-        teacher_user_id = data.pop("class_teacher_id")
-        if teacher_user_id is None:
-            previous_user_id = school_class.class_teacher_id
-            if previous_user_id:
-                previous_teacher = db.query(Teacher).filter(
-                    Teacher.user_id == previous_user_id, Teacher.deleted_at.is_(None)
-                ).first()
-                if previous_teacher and school_class in previous_teacher.classes:
-                    previous_teacher.classes.remove(school_class)
-            school_class.class_teacher_id = None
-            db.commit()
-        else:
-            teacher, teacher_user = _resolve_teacher_for_assignment(db, None, teacher_user_id)
-            try:
-                _assign_class_teacher(db, school_class, teacher, teacher_user)
-            except Exception as exc:
-                db.rollback()
-                raise HTTPException(status_code=500, detail=f"Unable to assign the class teacher: {exc}")
-
-    for field, value in data.items():
-        setattr(school_class, field, value)
+    class_obj.class_teacher_id = teacher.id
     db.commit()
-    return ApiResponse(success=True, message="Class updated.")
-
-
-@router.delete("/classes/{class_id}", response_model=ApiResponse)
-def delete_class(
-    class_id: UUID,
-    db: Session = Depends(get_db),
-    _user=Depends(require_permission("classes.delete")),
-):
-    school_class = db.query(SchoolClass).filter(
-        SchoolClass.id == class_id, SchoolClass.deleted_at.is_(None)
-    ).first()
-    if not school_class:
-        raise HTTPException(status_code=404, detail="Class not found.")
-    school_class.soft_delete()
-    db.commit()
-    return ApiResponse(success=True, message="Class soft-deleted.")
-
-
-# ---------- Subjects ----------
-
-@router.get("/subjects")
-def list_subjects(db: Session = Depends(get_db)):
-    return {"success": True, "data": db.query(Subject).filter(Subject.deleted_at.is_(None)).all()}
-
-
-@router.post("/subjects", response_model=ApiResponse, status_code=201)
-def create_subject(
-    payload: SubjectIn,
-    db: Session = Depends(get_db),
-    _user=Depends(require_permission("subjects.create")),
-):
-    if db.query(Subject).filter(Subject.name == payload.name, Subject.deleted_at.is_(None)).first():
-        raise HTTPException(status_code=409, detail="Subject already exists.")
-    db.add(Subject(**payload.model_dump()))
-    db.commit()
-    return ApiResponse(success=True, message="Subject created.")
+    return {"message": "Teacher assigned successfully", "class_id": str(class_obj.id), "teacher_id": str(teacher.id)}
