@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from pydantic import BaseModel
 
 from app.database.session import get_db
-from app.models.school import Class
+from app.models.school import SchoolClass
 from app.models.people import Teacher
 from app.models.user import User
 from app.auth.dependencies import get_current_user
@@ -42,7 +42,7 @@ def assign_class_teacher(
         raise HTTPException(status_code=404, detail="Teacher profile not found")
 
     # 4. Assign and save
-    class_obj.class_teacher_id = teacher.id
+    class_obj.class_teacher_id = teacher.user_id
     db.commit()
     return {
         "message": "Teacher assigned successfully",
