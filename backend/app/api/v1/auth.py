@@ -60,6 +60,17 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     if db.query(User).filter(func.lower(User.email) == payload.email, User.deleted_at.is_(None)).first():
         raise HTTPException(status_code=409, detail="A user with this email already exists.")
 
+    # Parent profiles may exist without a User account. Do not allow a new
+    # login account to reuse an email already attached to a parent profile.
+    if db.query(Parent).filter(
+        func.lower(Parent.email) == normalized_email,
+        Parent.deleted_at.is_(None),
+    ).first():
+        raise HTTPException(
+            status_code=409,
+            detail="A parent profile with this email already exists.",
+        )
+
     if payload.phone_number and db.query(User).filter(
         User.phone_number == payload.phone_number, User.deleted_at.is_(None)
     ).first():

@@ -139,10 +139,19 @@ def assign_class(
     ).first()
     if not teacher or not school_class:
         raise HTTPException(status_code=404, detail="Teacher or class not found.")
+
+    # Keep the teacher's assigned-class relationship and the class's
+    # class-teacher field synchronized.
+    school_class.class_teacher_id = teacher.user_id
     if school_class not in teacher.classes:
         teacher.classes.append(school_class)
-        db.commit()
-    return ApiResponse(success=True, message="Class assigned.")
+
+    db.commit()
+    return ApiResponse(
+        success=True,
+        message="Teacher assigned to class.",
+        data={"class_id": str(school_class.id), "class_teacher_id": str(teacher.user_id)},
+    )
 
 
 @router.delete("/{teacher_id}", response_model=ApiResponse)

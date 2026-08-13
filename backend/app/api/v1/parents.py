@@ -110,10 +110,29 @@ def create_parent(
     # Compare case-insensitively — "Jane@x.com" and "jane@x.com" are the same
     # address, and an exact-match check lets a second, duplicate record through.
     normalized_email = payload.email.strip().lower() if payload.email else None
-    if normalized_email and db.query(Parent).filter(
-        func.lower(Parent.email) == normalized_email, Parent.deleted_at.is_(None)
-    ).first():
-        raise HTTPException(status_code=409, detail="A parent with this email already exists — link the existing record instead.")
+    if normalized_email:
+        existing_parent = db.query(Parent).filter(
+            func.lower(Parent.email) == normalized_email,
+            Parent.deleted_at.is_(None),
+        ).first()
+        if existing_parent:
+            raise HTTPException(
+                status_code=409,
+                detail="A parent profile with this email already exists — link the existing record instead.",
+            )
+
+        # Teacher/student accounts use the users table for their email.
+        # Prevent a standalone parent profile from reusing an email already
+        # attached to another account/profile.
+        existing_user = db.query(User).filter(
+            func.lower(User.email) == normalized_email,
+            User.deleted_at.is_(None),
+        ).first()
+        if existing_user:
+            raise HTTPException(
+                status_code=409,
+                detail="This email is already used by an existing user account/profile.",
+            )
 
     if payload.user_id:
         target_user = db.query(User).filter(User.id == payload.user_id, User.deleted_at.is_(None)).first()

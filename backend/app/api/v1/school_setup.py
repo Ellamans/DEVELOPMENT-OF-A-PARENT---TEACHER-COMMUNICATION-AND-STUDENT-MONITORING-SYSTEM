@@ -265,13 +265,29 @@ def update_class(
         ).first()
         if not teacher_user:
             raise HTTPException(status_code=404, detail="That teacher's user account was not found.")
-        if not any(r.name in {"teacher", "class_teacher"} for r in teacher_user.roles):
+        if not any(r.name == "teacher" for r in teacher_user.roles):
             raise HTTPException(status_code=422, detail="That user account does not have the teacher role.")
+
+        # The class-teacher field must point to a real active Teacher profile,
+        # not merely a user account carrying the teacher role.
+        from app.models.people import Teacher
+        teacher_profile = db.query(Teacher).filter(
+            Teacher.user_id == teacher_user.id,
+            Teacher.deleted_at.is_(None),
+        ).first()
+        if not teacher_profile:
+            raise HTTPException(
+                status_code=409,
+                detail="This teacher account does not have an active teacher profile.",
+            )
 
     for field, value in data.items():
         setattr(school_class, field, value)
     db.commit()
-    return ApiResponse(success=True, message="Class updated.")
+    return ApiResponse(
+        success=True,
+        message="Class teacher assigned." if data.get("class_teacher_id") else "Class updated.",
+    )
 
 
 @router.delete("/classes/{class_id}", response_model=ApiResponse)
