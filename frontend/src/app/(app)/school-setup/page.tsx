@@ -264,39 +264,18 @@ function SessionsTermsTab() {
 function ClassesTab() {
   const queryClient = useQueryClient();
   const [classForm, setClassForm] = useState({ name: "", level: "" });
-  const [armForm, setArmForm] = useState({ class_id: "", name: "", capacity: "40" });
-  const [savingArmId, setSavingArmId] = useState<string | null>(null);
+  const [savingClassId, setSavingClassId] = useState<string | null>(null);
 
   const classesQuery = useQuery({
     queryKey: ["school-classes"],
     queryFn: async () => {
-      const { data } = await apiClient.get("/school-setup/classes");
-      return data.data as { id: string; name: string; level: string }[];
+      const { data } = await apiClient.get("/school-setup/classes", { params: { _: Date.now() } });
+      return data.data as { id: string; name: string; level: string; class_teacher_id: string | null; class_teacher_name: string | null }[];
     },
   });
 
-  const armsQuery = useQuery({
-    queryKey: ["class-arms"],
-    queryFn: async () => {
-      // Cache-bust: on flaky connections, an intermediate cache (browser or
-      // network) can serve a stale response even right after invalidation.
-      // A unique param per fetch guarantees a fresh network round-trip.
-      const { data } = await apiClient.get("/school-setup/class-arms", { params: { _: Date.now() } });
-      return data.data as {
-        id: string;
-        class_id: string;
-        class_name: string | null;
-        name: string;
-        full_name: string;
-        capacity: number;
-        class_teacher_id: string | null;
-        class_teacher_name: string | null;
-      }[];
-    },
-  });
-
-  // The class teacher field on a class arm stores a user ID directly, so we
-  // pull user accounts with the "teacher" role for the assignment dropdown.
+  // The class teacher field stores a user ID directly, so we pull user
+  // accounts with the "teacher" role for the assignment dropdown.
   const usersQuery = useQuery({
     queryKey: ["users-teacher-role"],
     queryFn: async () => {
@@ -320,152 +299,85 @@ function ClassesTab() {
       await apiClient.post("/school-setup/classes", classForm);
       toast.success("Class created.");
       setClassForm({ name: "", level: "" });
-      queryClient.invalidateQueries({ queryKey: ["school-classes"] });
+      await queryClient.refetchQueries({ queryKey: ["school-classes"] });
     } catch (err: any) {
       toast.error(err?.response?.data?.detail || "Couldn't create class.");
     }
   }
 
-  async function addArm(e: React.FormEvent) {
-    e.preventDefault();
-    if (!armForm.class_id || !armForm.name.trim()) {
-      toast.error("Pick a class and enter an arm name (e.g. A, B, Gold).");
-      return;
-    }
+  async function assignClassTeacher(classId: string, teacherUserId: string) {
+    setSavingClassId(classId);
     try {
-      await apiClient.post("/school-setup/class-arms", { ...armForm, capacity: Number(armForm.capacity) || 40 });
-      toast.success("Class arm created.");
-      setArmForm({ class_id: "", name: "", capacity: "40" });
-      await queryClient.refetchQueries({ queryKey: ["class-arms"] });
-    } catch (err: any) {
-      toast.error(err?.response?.data?.detail || "Couldn't create class arm.");
-    }
-  }
-
-  async function assignClassTeacher(armId: string, teacherUserId: string) {
-    setSavingArmId(armId);
-    try {
-      await apiClient.patch(`/school-setup/class-arms/${armId}`, {
+      await apiClient.patch(`/school-setup/classes/${classId}`, {
         class_teacher_id: teacherUserId || null,
       });
       toast.success(teacherUserId ? "Class teacher assigned." : "Class teacher removed.");
-      queryClient.invalidateQueries({ queryKey: ["class-arms"] });
+      await queryClient.refetchQueries({ queryKey: ["school-classes"] });
     } catch (err: any) {
       toast.error(err?.response?.data?.detail || "Couldn't assign class teacher.");
     } finally {
-      setSavingArmId(null);
+      setSavingClassId(null);
     }
   }
 
   return (
-    <div className="grid md:grid-cols-2 gap-6">
-      <div>
-        <h3 className="text-sm font-semibold text-text mb-2">Classes</h3>
-        <form onSubmit={addClass} className="space-y-2 mb-3">
+    <div className="max-w-xl">
+      <h3 className="text-sm font-semibold text-text mb-2">Classes</h3>
+      <form onSubmit={addClass} className="space-y-2 mb-4">
+        <input
+          value={classForm.name}
+          onChange={(e) => setClassForm({ ...classForm, name: e.target.value })}
+          placeholder="e.g. JSS 1"
+          className="w-full rounded border border-border bg-background px-3 py-2 text-sm text-text focus:outline-none focus:ring-2 focus:ring-primary"
+        />
+        <div className="flex gap-2">
           <input
-            value={classForm.name}
-            onChange={(e) => setClassForm({ ...classForm, name: e.target.value })}
-            placeholder="e.g. JSS 1"
-            className="w-full rounded border border-border bg-background px-3 py-2 text-sm text-text focus:outline-none focus:ring-2 focus:ring-primary"
+            value={classForm.level}
+            onChange={(e) => setClassForm({ ...classForm, level: e.target.value })}
+            placeholder="Level, e.g. junior_secondary"
+            className="flex-1 rounded border border-border bg-background px-3 py-2 text-sm text-text focus:outline-none focus:ring-2 focus:ring-primary"
           />
-          <div className="flex gap-2">
-            <input
-              value={classForm.level}
-              onChange={(e) => setClassForm({ ...classForm, level: e.target.value })}
-              placeholder="Level, e.g. junior_secondary"
-              className="flex-1 rounded border border-border bg-background px-3 py-2 text-sm text-text focus:outline-none focus:ring-2 focus:ring-primary"
-            />
-            <button type="submit" className="rounded bg-primary text-white px-3 py-2 text-sm font-medium hover:opacity-90">
-              <Plus className="h-4 w-4" />
-            </button>
-          </div>
-        </form>
-        <div className="bg-card border border-border rounded-lg divide-y divide-border">
-          {classesQuery.isLoading ? (
-            <div className="p-4 flex justify-center"><Loader2 className="h-5 w-5 animate-spin text-primary" /></div>
-          ) : !classesQuery.data?.length ? (
-            <p className="p-4 text-sm text-text/50">No classes yet.</p>
-          ) : (
-            classesQuery.data.map((c) => (
-              <div key={c.id} className="p-3 text-sm">
-                <span className="text-text">{c.name}</span>
-                <span className="text-text/40 text-xs ml-2">{c.level}</span>
-              </div>
-            ))
-          )}
+          <button type="submit" className="rounded bg-primary text-white px-3 py-2 text-sm font-medium hover:opacity-90">
+            <Plus className="h-4 w-4" />
+          </button>
         </div>
-      </div>
+      </form>
 
-      <div>
-        <h3 className="text-sm font-semibold text-text mb-2">Class Arms</h3>
-        <p className="text-xs text-text/50 mb-2">
-          A class arm is a specific stream within a class, e.g. "JSS 1A". Assign a class teacher below —
-          that teacher becomes the contact parents and students of that arm see in Messaging.
-        </p>
-        <form onSubmit={addArm} className="space-y-2 mb-4">
-          <select
-            value={armForm.class_id}
-            onChange={(e) => setArmForm({ ...armForm, class_id: e.target.value })}
-            className="w-full rounded border border-border bg-background px-3 py-2 text-sm text-text"
-          >
-            <option value="">Select class...</option>
-            {classesQuery.data?.map((c) => (
-              <option key={c.id} value={c.id}>{c.name}</option>
-            ))}
-          </select>
-          <div className="flex gap-2">
-            <input
-              value={armForm.name}
-              onChange={(e) => setArmForm({ ...armForm, name: e.target.value })}
-              placeholder="Arm, e.g. A"
-              className="flex-1 rounded border border-border bg-background px-3 py-2 text-sm text-text focus:outline-none focus:ring-2 focus:ring-primary"
-            />
-            <input
-              value={armForm.capacity}
-              onChange={(e) => setArmForm({ ...armForm, capacity: e.target.value })}
-              placeholder="Capacity"
-              type="number"
-              className="w-24 rounded border border-border bg-background px-3 py-2 text-sm text-text focus:outline-none focus:ring-2 focus:ring-primary"
-            />
-            <button type="submit" className="rounded bg-primary text-white px-3 py-2 text-sm font-medium hover:opacity-90">
-              <Plus className="h-4 w-4" />
-            </button>
-          </div>
-        </form>
-
-        <div className="bg-card border border-border rounded-lg divide-y divide-border">
-          {armsQuery.isLoading ? (
-            <div className="p-4 flex justify-center"><Loader2 className="h-5 w-5 animate-spin text-primary" /></div>
-          ) : !armsQuery.data?.length ? (
-            <p className="p-4 text-sm text-text/50">No class arms yet.</p>
-          ) : (
-            armsQuery.data.map((a) => (
-              <div key={a.id} className="p-3 text-sm space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-text font-medium">{a.full_name}</span>
-                  <span className="text-text/40 text-xs">capacity {a.capacity}</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <select
-                    value={a.class_teacher_id || ""}
-                    onChange={(e) => assignClassTeacher(a.id, e.target.value)}
-                    disabled={savingArmId === a.id}
-                    className="flex-1 rounded border border-border bg-background px-2 py-1.5 text-xs text-text disabled:opacity-60"
-                  >
-                    <option value="">No class teacher assigned</option>
-                    {teacherUserOptions.map((t) => (
-                      <option key={t.user_id} value={t.user_id}>{t.name}</option>
-                    ))}
-                  </select>
-                  {savingArmId === a.id && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
-                </div>
-                {a.class_teacher_name && (
-                  <p className="text-xs text-green-600">Class teacher: {a.class_teacher_name}</p>
-                )}
+      <p className="text-xs text-text/50 mb-2">
+        Assign a class teacher below — that teacher becomes the contact parents and students of that class see in Messaging.
+      </p>
+      <div className="bg-card border border-border rounded-lg divide-y divide-border">
+        {classesQuery.isLoading ? (
+          <div className="p-4 flex justify-center"><Loader2 className="h-5 w-5 animate-spin text-primary" /></div>
+        ) : !classesQuery.data?.length ? (
+          <p className="p-4 text-sm text-text/50">No classes yet.</p>
+        ) : (
+          classesQuery.data.map((c) => (
+            <div key={c.id} className="p-3 text-sm space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-text font-medium">{c.name}</span>
+                <span className="text-text/40 text-xs">{c.level}</span>
               </div>
-            ))
-          )}
-        </div>
+              <div className="flex items-center gap-2">
+                <select
+                  value={c.class_teacher_id || ""}
+                  onChange={(e) => assignClassTeacher(c.id, e.target.value)}
+                  disabled={savingClassId === c.id}
+                  className="flex-1 rounded border border-border bg-background px-2 py-1.5 text-xs text-text disabled:opacity-60"
+                >
+                  <option value="">No class teacher assigned</option>
+                  {teacherUserOptions.map((t) => (
+                    <option key={t.user_id} value={t.user_id}>{t.name}</option>
+                  ))}
+                </select>
+                {savingClassId === c.id && <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />}
+              </div>
+              {c.class_teacher_name && (
+                <p className="text-xs text-green-600">Class teacher: {c.class_teacher_name}</p>
+              )}
+            </div>
+          ))
+        )}
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -16,9 +16,7 @@ interface Student {
   last_name: string;
   status: string;
   current_class_id: string | null;
-  class_arm_id: string | null;
   class_name: string | null;
-  class_arm_name: string | null;
   full_class_name: string | null;
 }
 
@@ -26,14 +24,6 @@ interface SchoolClass {
   id: string;
   name: string;
   level: string;
-}
-
-interface ClassArm {
-  id: string;
-  class_id: string;
-  name: string;
-  full_name: string;
-  class_teacher_id: string | null;
   class_teacher_name: string | null;
 }
 
@@ -42,71 +32,38 @@ function useClassOptions() {
     queryKey: ["school-classes"],
     queryFn: async () => (await apiClient.get("/school-setup/classes")).data.data as SchoolClass[],
   });
-  const armsQuery = useQuery({
-    queryKey: ["class-arms"],
-    queryFn: async () => (await apiClient.get("/school-setup/class-arms")).data.data as ClassArm[],
-  });
-  return { classesQuery, armsQuery };
+  return { classesQuery };
 }
 
-function ClassAndArmFields({
+function ClassField({
   classId,
-  armId,
   onClassChange,
-  onArmChange,
   classesQuery,
-  armsQuery,
 }: {
   classId: string;
-  armId: string;
   onClassChange: (v: string) => void;
-  onArmChange: (v: string) => void;
   classesQuery: ReturnType<typeof useClassOptions>["classesQuery"];
-  armsQuery: ReturnType<typeof useClassOptions>["armsQuery"];
 }) {
-  const armsForClass = useMemo(
-    () => (armsQuery.data ?? []).filter((a) => a.class_id === classId),
-    [armsQuery.data, classId]
-  );
-  const selectedArm = armsForClass.find((a) => a.id === armId);
+  const selectedClass = classesQuery.data?.find((c) => c.id === classId);
 
   return (
-    <div className="grid grid-cols-2 gap-3">
-      <div>
-        <label className="block text-sm font-medium text-text mb-1">Class</label>
-        <select
-          value={classId}
-          onChange={(e) => {
-            onClassChange(e.target.value);
-            onArmChange("");
-          }}
-          className="w-full rounded border border-border bg-background px-3 py-2 text-text focus:outline-none focus:ring-2 focus:ring-primary"
-        >
-          <option value="">Not assigned</option>
-          {classesQuery.data?.map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </select>
-      </div>
-      <div>
-        <label className="block text-sm font-medium text-text mb-1">Class Arm</label>
-        <select
-          value={armId}
-          onChange={(e) => onArmChange(e.target.value)}
-          disabled={!classId}
-          className="w-full rounded border border-border bg-background px-3 py-2 text-text focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-50"
-        >
-          <option value="">Select arm...</option>
-          {armsForClass.map((a) => (
-            <option key={a.id} value={a.id}>{a.name}</option>
-          ))}
-        </select>
-        {selectedArm && (
-          <p className="text-xs text-text/40 mt-1">
-            Class teacher: {selectedArm.class_teacher_name || "not yet assigned"}
-          </p>
-        )}
-      </div>
+    <div>
+      <label className="block text-sm font-medium text-text mb-1">Class</label>
+      <select
+        value={classId}
+        onChange={(e) => onClassChange(e.target.value)}
+        className="w-full rounded border border-border bg-background px-3 py-2 text-text focus:outline-none focus:ring-2 focus:ring-primary"
+      >
+        <option value="">Not assigned</option>
+        {classesQuery.data?.map((c) => (
+          <option key={c.id} value={c.id}>{c.name}</option>
+        ))}
+      </select>
+      {selectedClass && (
+        <p className="text-xs text-text/40 mt-1">
+          Class teacher: {selectedClass.class_teacher_name || "not yet assigned"}
+        </p>
+      )}
     </div>
   );
 }
@@ -123,8 +80,7 @@ type StudentForm = z.infer<typeof studentSchema>;
 function AddStudentModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [classId, setClassId] = useState("");
-  const [armId, setArmId] = useState("");
-  const { classesQuery, armsQuery } = useClassOptions();
+  const { classesQuery } = useClassOptions();
   const {
     register,
     handleSubmit,
@@ -137,7 +93,6 @@ function AddStudentModal({ onClose, onCreated }: { onClose: () => void; onCreate
       await apiClient.post("/students", {
         ...values,
         current_class_id: classId || null,
-        class_arm_id: armId || null,
       });
       toast.success("Student added.");
       onCreated();
@@ -216,13 +171,10 @@ function AddStudentModal({ onClose, onCreated }: { onClose: () => void; onCreate
             </div>
           </div>
 
-          <ClassAndArmFields
+          <ClassField
             classId={classId}
-            armId={armId}
             onClassChange={setClassId}
-            onArmChange={setArmId}
             classesQuery={classesQuery}
-            armsQuery={armsQuery}
           />
           <p className="text-xs text-text/40 -mt-2">
             No classes yet? Create them first under School Setup → Classes.
@@ -257,13 +209,11 @@ function EditClassModal({
   onSaved: () => void;
 }) {
   const [classId, setClassId] = useState(student.current_class_id ?? "");
-  const [armId, setArmId] = useState(student.class_arm_id ?? "");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const { classesQuery, armsQuery } = useClassOptions();
+  const { classesQuery } = useClassOptions();
 
   useEffect(() => {
     setClassId(student.current_class_id ?? "");
-    setArmId(student.class_arm_id ?? "");
   }, [student]);
 
   async function handleSave() {
@@ -273,7 +223,6 @@ function EditClassModal({
         first_name: student.first_name,
         last_name: student.last_name,
         current_class_id: classId || null,
-        class_arm_id: armId || null,
       });
       toast.success("Class assignment updated.");
       onSaved();
@@ -298,13 +247,10 @@ function EditClassModal({
         </div>
 
         <div className="space-y-4">
-          <ClassAndArmFields
+          <ClassField
             classId={classId}
-            armId={armId}
             onClassChange={setClassId}
-            onArmChange={setArmId}
             classesQuery={classesQuery}
-            armsQuery={armsQuery}
           />
 
           <div className="flex justify-end gap-2 pt-2">
