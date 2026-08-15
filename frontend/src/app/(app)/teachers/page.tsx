@@ -15,6 +15,9 @@ interface Teacher {
   user_id: string;
   full_name: string | null;
   email: string | null;
+  approval_status?: "pending" | "approved" | "rejected" | string;
+  requested_class_id?: string | null;
+  requested_class_name?: string | null;
 }
 
 interface TeacherDetail {
@@ -28,6 +31,9 @@ interface TeacherDetail {
   subjects: { id: string; name: string }[];
   classes: { id: string; name: string }[];
   class_teacher_of: { id: string; name: string }[];
+  approval_status?: "pending" | "approved" | "rejected" | string;
+  requested_class_id?: string | null;
+  requested_class_name?: string | null;
 }
 
 interface SchoolClass {
@@ -44,16 +50,17 @@ interface SubjectRow {
   code: string | null;
 }
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status }: { status?: string | null }) {
   const colors: Record<string, string> = {
     active: "bg-green-500/10 text-green-600",
     on_leave: "bg-yellow-500/10 text-yellow-600",
     suspended: "bg-orange-500/10 text-orange-600",
     terminated: "bg-red-500/10 text-red-600",
   };
+  const safeStatus = status || "unknown";
   return (
-    <span className={clsx("px-2 py-0.5 rounded-full text-xs font-medium capitalize", colors[status] || "bg-border text-text/60")}>
-      {status.replace(/_/g, " ")}
+    <span className={clsx("px-2 py-0.5 rounded-full text-xs font-medium capitalize", colors[safeStatus] || "bg-border text-text/60")}>
+      {safeStatus.replace(/_/g, " ")}
     </span>
   );
 }
@@ -159,23 +166,89 @@ function AssignClassModal({ teacher, onClose }: { teacher: Teacher; onClose: () 
   );
 }
 
-function ManageTeacherModal({ teacher, onClose }: { teacher: Teacher; onClose: () => void }) {
+function ApprovalBanner({
+  teacher,
+  detail,
+  onApproved,
+}: {
+  teacher: Teacher;
+  detail: TeacherDetail;
+  onApproved: () => void;
+}) {
+  const [isApproving, setIsApproving] = useState(false);
+
+  async function handleApprove() {
+    setIsApproving(true);
+    try {
+      const res = await apiClient.post(`/teachers/${teacher.id}/approve`);
+      toast.success(res?.data?.message || "Teacher approved.");
+      onApproved();
+    } catch (err: any) {
+      toast.error(err?.response?.data?.detail || "Couldn't approve this teacher.");
+    } finally {
+      setIsApproving(false);
+    }
+  }
+
+  return (
+    <div className="mb-5 text-sm bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3">
+      <p className="text-yellow-700 mb-2">
+        This teacher registered themselves and is awaiting approval.
+        {detail.requested_class_name
+          ? ` They picked ${detail.requested_class_name} as their class.`
+          : " They didn't pick a class — you can assign one after approving."}
+        {" "}Their login stays disabled until approved.
+      </p>
+      <button
+        onClick={handleApprove}
+        disabled={isApproving}
+        className="flex items-center gap-2 rounded bg-primary text-white px-3 py-1.5 text-xs font-medium hover:opacity-90 disabled:opacity-60"
+      >
+        {isApproving && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+        Approve{detail.requested_class_name ? ` & assign to ${detail.requested_class_name}` : ""}
+      </button>
+    </div>
+  );
+}
+
+function ManageTeacherModal({
+  teacher,
+  onClose,
+  onRequestAssignClass,
+}: {
+  teacher: Teacher;
+  onClose: () => void;
+  onRequestAssignClass: () => void;
+}) {
   const queryClient = useQueryClient();
   const [subjectId, setSubjectId] = useState("");
   const [isAssigningSubject, setIsAssigningSubject] = useState(false);
 
   const detailQuery = useQuery({
     queryKey: ["teacher-detail", teacher.id],
-    queryFn: async () => (await apiClient.get(`/teachers/${teacher.id}`)).data.data as TeacherDetail,
+    queryFn: async () => {
+      const res = await apiClient.get(`/teachers/${teacher.id}`);
+      // Defensive: tolerate either {data: {...}} or a bare object, so a
+      // backend response-shape change degrades gracefully instead of
+      // throwing mid-render and crashing the whole app.
+      const body = res?.data?.data ?? res?.data ?? null;
+      return body as TeacherDetail | null;
+    },
+    retry: false,
   });
 
   const subjectsQuery = useQuery({
     queryKey: ["school-subjects"],
-    queryFn: async () => (await apiClient.get("/school-setup/subjects")).data.data as SubjectRow[],
+    queryFn: async () => {
+      const res = await apiClient.get("/school-setup/subjects");
+      const body = res?.data?.data ?? res?.data ?? [];
+      return (Array.isArray(body) ? body : []) as SubjectRow[];
+    },
+    retry: false,
   });
 
-  const assignedSubjectIds = new Set((detailQuery.data?.subjects || []).map((s) => s.id));
-  const availableSubjects = (subjectsQuery.data || []).filter((s) => !assignedSubjectIds.has(s.id));
+  const assignedSubjectIds = new Set((detailQuery.data?.subjects ?? []).map((s) => s?.id));
+  const availableSubjects = (subjectsQuery.data ?? []).filter((s) => s?.id && !assignedSubjectIds.has(s.id));
 
   async function handleAssignSubject() {
     if (!subjectId) return;
@@ -210,6 +283,10 @@ function ManageTeacherModal({ teacher, onClose }: { teacher: Teacher; onClose: (
           <div className="flex justify-center py-8">
             <Loader2 className="h-5 w-5 animate-spin text-primary" />
           </div>
+        ) : detailQuery.isError ? (
+          <p className="text-sm text-red-500">
+            {(detailQuery.error as any)?.response?.data?.detail || "Couldn't load this teacher's profile."}
+          </p>
         ) : !detail ? (
           <p className="text-sm text-text/50">Couldn't load this teacher's profile.</p>
         ) : (
@@ -237,11 +314,27 @@ function ManageTeacherModal({ teacher, onClose }: { teacher: Teacher; onClose: (
               </div>
             </div>
 
+            {detail.approval_status === "pending" && (
+              <ApprovalBanner teacher={teacher} detail={detail} onApproved={() => {
+                queryClient.invalidateQueries({ queryKey: ["teacher-detail", teacher.id] });
+                queryClient.invalidateQueries({ queryKey: ["teachers"] });
+                queryClient.invalidateQueries({ queryKey: ["school-classes"] });
+              }} />
+            )}
+
             <div className="mb-5">
-              <h4 className="text-sm font-medium text-text mb-2">Class teacher of</h4>
-              {detail.class_teacher_of.length ? (
+              <div className="flex items-center justify-between mb-2">
+                <h4 className="text-sm font-medium text-text">Class teacher of</h4>
+                <button
+                  onClick={onRequestAssignClass}
+                  className="text-xs text-primary hover:underline"
+                >
+                  {(detail.class_teacher_of ?? []).length ? "Change class" : "Assign a class"}
+                </button>
+              </div>
+              {(detail.class_teacher_of ?? []).length ? (
                 <ul className="space-y-1">
-                  {detail.class_teacher_of.map((c) => (
+                  {(detail.class_teacher_of ?? []).map((c) => (
                     <li key={c.id} className="text-sm bg-background border border-border rounded px-3 py-2">
                       {c.name}
                     </li>
@@ -254,9 +347,9 @@ function ManageTeacherModal({ teacher, onClose }: { teacher: Teacher; onClose: (
 
             <div className="mb-5">
               <h4 className="text-sm font-medium text-text mb-2">Classes taught</h4>
-              {detail.classes.length ? (
+              {(detail.classes ?? []).length ? (
                 <ul className="flex flex-wrap gap-2">
-                  {detail.classes.map((c) => (
+                  {(detail.classes ?? []).map((c) => (
                     <li key={c.id} className="text-xs bg-background border border-border rounded-full px-2.5 py-1">
                       {c.name}
                     </li>
@@ -269,9 +362,9 @@ function ManageTeacherModal({ teacher, onClose }: { teacher: Teacher; onClose: (
 
             <div className="border-t border-border pt-4">
               <h4 className="text-sm font-medium text-text mb-2">Subjects</h4>
-              {detail.subjects.length ? (
+              {(detail.subjects ?? []).length ? (
                 <ul className="flex flex-wrap gap-2 mb-3">
-                  {detail.subjects.map((s) => (
+                  {(detail.subjects ?? []).map((s) => (
                     <li key={s.id} className="text-xs bg-primary/10 text-primary rounded-full px-2.5 py-1">
                       {s.name}
                     </li>
@@ -322,6 +415,7 @@ export default function TeachersPage() {
   const [assigningTeacher, setAssigningTeacher] = useState<Teacher | null>(null);
   const [managingTeacher, setManagingTeacher] = useState<Teacher | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const { data, isLoading } = useQuery({
@@ -340,6 +434,22 @@ export default function TeachersPage() {
 
   function classesFor(userId: string) {
     return (classesQuery.data ?? []).filter((c) => c.class_teacher_id === userId);
+  }
+
+  const pendingCount = (data?.data ?? []).filter((t) => t.approval_status === "pending").length;
+
+  async function handleApprove(teacher: Teacher) {
+    setApprovingId(teacher.id);
+    try {
+      const res = await apiClient.post(`/teachers/${teacher.id}/approve`);
+      toast.success(res?.data?.message || "Teacher approved.");
+      queryClient.invalidateQueries({ queryKey: ["teachers"] });
+      queryClient.invalidateQueries({ queryKey: ["school-classes"] });
+    } catch (err: any) {
+      toast.error(err?.response?.data?.detail || "Couldn't approve this teacher.");
+    } finally {
+      setApprovingId(null);
+    }
   }
 
   async function handleDelete(teacher: Teacher) {
@@ -362,10 +472,16 @@ export default function TeachersPage() {
         <h2 className="text-xl font-semibold text-text">Teachers</h2>
       </div>
       <p className="text-sm text-text/60 mb-4">
-        New teacher profiles are created from an existing user account under Users. Use "Assign to Class" below to
-        make a teacher the class teacher for a class (e.g. Teacher 1 → JSS 1) — once assigned, parents and
-        students in that class can message them directly.
+        Teachers who self-register pick a class on the sign-up page. Approve them below to activate their login
+        and make them the class teacher for the class they picked — parents in that class are notified
+        automatically. You can also assign or change a teacher's class manually with "Assign to Class."
       </p>
+
+      {pendingCount > 0 && (
+        <div className="mb-4 text-sm bg-yellow-500/10 text-yellow-700 border border-yellow-500/20 rounded-lg px-4 py-2">
+          {pendingCount} teacher{pendingCount === 1 ? "" : "s"} waiting on approval.
+        </div>
+      )}
 
       <div className="bg-card border border-border rounded-lg overflow-hidden">
         {isLoading ? (
@@ -382,6 +498,7 @@ export default function TeachersPage() {
                 <th className="px-4 py-3">Employee ID</th>
                 <th className="px-4 py-3">Class Teacher Of</th>
                 <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Approval</th>
                 <th className="px-4 py-3"></th>
               </tr>
             </thead>
@@ -401,6 +518,27 @@ export default function TeachersPage() {
                     )}
                   </td>
                   <td className="px-4 py-3"><StatusBadge status={t.employment_status} /></td>
+                  <td className="px-4 py-3">
+                    {t.approval_status === "pending" ? (
+                      <div className="flex flex-col gap-1">
+                        <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-500/10 text-yellow-700 w-fit">
+                          Pending{t.requested_class_name ? ` — picked ${t.requested_class_name}` : ""}
+                        </span>
+                        <button
+                          onClick={() => handleApprove(t)}
+                          disabled={approvingId === t.id}
+                          className="inline-flex items-center gap-1 text-xs text-primary hover:underline w-fit disabled:opacity-50"
+                        >
+                          {approvingId === t.id && <Loader2 className="h-3 w-3 animate-spin" />}
+                          Approve
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-500/10 text-green-600">
+                        Approved
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-3">
                       <button
@@ -459,7 +597,15 @@ export default function TeachersPage() {
         <AssignClassModal teacher={assigningTeacher} onClose={() => setAssigningTeacher(null)} />
       )}
       {managingTeacher && (
-        <ManageTeacherModal teacher={managingTeacher} onClose={() => setManagingTeacher(null)} />
+        <ManageTeacherModal
+          teacher={managingTeacher}
+          onClose={() => setManagingTeacher(null)}
+          onRequestAssignClass={() => {
+            const target = managingTeacher;
+            setManagingTeacher(null);
+            setAssigningTeacher(target);
+          }}
+        />
       )}
     </div>
   );

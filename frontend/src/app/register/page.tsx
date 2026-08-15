@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -22,23 +22,70 @@ const registerSchema = z.object({
     .regex(/[0-9]/, "Must include a number")
     .regex(/[^A-Za-z0-9]/, "Must include a special character"),
   role: z.enum(["parent", "teacher", "student"]),
+  class_id: z.string().optional(),
 });
 type RegisterForm = z.infer<typeof registerSchema>;
+
+interface PublicClass {
+  id: string;
+  name: string;
+  level: string;
+}
 
 export default function RegisterPage() {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [classes, setClasses] = useState<PublicClass[]>([]);
+  const [classesLoading, setClassesLoading] = useState(false);
   const {
     register,
     handleSubmit,
+    watch,
     formState: { errors },
   } = useForm<RegisterForm>({ resolver: zodResolver(registerSchema), defaultValues: { role: "parent" } });
+
+  const selectedRole = watch("role");
+
+  // Classes are fetched fresh every time the teacher option is selected
+  // (rather than once on page load) so a class an admin just created shows
+  // up immediately, and one they just deleted disappears immediately too —
+  // no stale list at the one moment it matters most.
+  useEffect(() => {
+    if (selectedRole !== "teacher") return;
+    let cancelled = false;
+    setClassesLoading(true);
+    apiClient
+      .get("/school-setup/classes/public")
+      .then((res) => {
+        if (!cancelled) setClasses(res?.data?.data ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setClasses([]);
+      })
+      .finally(() => {
+        if (!cancelled) setClassesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRole]);
 
   async function onSubmit(values: RegisterForm) {
     setIsSubmitting(true);
     try {
-      await apiClient.post("/auth/register", values);
-      toast.success("Account created! Please sign in.");
+      const payload = {
+        ...values,
+        // Never send an empty string as class_id — the backend expects a
+        // real UUID or nothing at all.
+        class_id: values.role === "teacher" && values.class_id ? values.class_id : undefined,
+      };
+      const res = await apiClient.post("/auth/register", payload);
+      const message = res?.data?.message || "Account created!";
+      if (values.role === "teacher") {
+        toast.success(message, { duration: 8000 });
+      } else {
+        toast.success("Account created! Please sign in.");
+      }
       router.push("/login");
     } catch (err: any) {
       const detail = err?.response?.data?.message || err?.response?.data?.detail;
@@ -90,6 +137,34 @@ export default function RegisterPage() {
               <option value="student">Student</option>
             </select>
           </div>
+
+          {selectedRole === "teacher" && (
+            <div>
+              <label className="block text-sm font-medium text-text mb-1">Class you'll be in charge of</label>
+              <select
+                {...register("class_id")}
+                disabled={classesLoading}
+                className="w-full rounded border border-border bg-background px-3 py-2 text-text focus:outline-none focus:ring-2 focus:ring-primary disabled:opacity-60"
+              >
+                <option value="">
+                  {classesLoading ? "Loading classes..." : "Select a class (optional)"}
+                </option>
+                {classes.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+              {!classesLoading && !classes.length && (
+                <p className="text-xs text-text/40 mt-1">
+                  No classes are set up yet — you can skip this and an admin will assign one.
+                </p>
+              )}
+              <p className="text-xs text-text/50 mt-1">
+                An admin will need to approve your account before you can sign in. Once approved, you'll
+                automatically be the class teacher for the class you pick here — you can also change it later
+                from your profile.
+              </p>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-text mb-1">Email</label>
