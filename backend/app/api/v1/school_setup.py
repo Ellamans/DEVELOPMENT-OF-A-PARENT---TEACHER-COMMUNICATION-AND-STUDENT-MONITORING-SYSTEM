@@ -217,6 +217,19 @@ def _serialize_class(db: Session, school_class: SchoolClass) -> dict:
     }
 
 
+@router.get("/classes/public")
+def list_classes_public(db: Session = Depends(get_db)):
+    """Unauthenticated, minimal class list for the registration page — a
+    prospective teacher needs to pick a class before they have an account to
+    log in with. Deliberately returns only id/name/level (no capacity,
+    status, or current class teacher) since this is public.
+    """
+    classes = db.query(SchoolClass).filter(
+        SchoolClass.deleted_at.is_(None), SchoolClass.status == "active"
+    ).order_by(SchoolClass.name).all()
+    return {"success": True, "data": [{"id": c.id, "name": c.name, "level": c.level} for c in classes]}
+
+
 @router.get("/classes")
 def list_classes(db: Session = Depends(get_db)):
     classes = db.query(SchoolClass).filter(SchoolClass.deleted_at.is_(None)).order_by(SchoolClass.name).all()
@@ -272,7 +285,27 @@ def assign_class_teacher(
         SchoolClass.deleted_at.is_(None),
     ).first()
     if not school_class:
-        raise HTTPException(status_code=404, detail="Class not found. It may have been deleted — refresh the page and try again.")
+        # Distinguish "doesn't exist at all" from "exists but soft-deleted"
+        # so the error is actually diagnostic instead of a generic 404 —
+        # both in the API response and in the server logs.
+        any_match = db.query(SchoolClass).filter(SchoolClass.id == class_id).first()
+        total_active = db.query(SchoolClass).filter(SchoolClass.deleted_at.is_(None)).count()
+        if any_match is not None:
+            reason = "that class was deleted"
+        else:
+            reason = "no class with that id exists in this database"
+        print(
+            f"[assign-teacher] 404: class_id={class_id} not resolvable "
+            f"({reason}); {total_active} active class(es) currently exist."
+        )
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Class not found ({reason}). There are currently {total_active} "
+                "class(es) in the system — refresh the Classes/Teachers page to "
+                "reload the list, then try again."
+            ),
+        )
 
     raw_teacher_id = payload.get("teacher_id") or payload.get("teacher_user_id")
     if not raw_teacher_id:
@@ -303,8 +336,10 @@ def assign_class_teacher(
             User.id == teacher_id, User.deleted_at.is_(None)
         ).first()
         if not candidate_user:
+            print(f"[assign-teacher] 404: teacher_id={teacher_id} matches no Teacher profile or User account.")
             raise HTTPException(status_code=404, detail="Teacher not found. Their user account may have been deleted.")
         if not any(r.name == "teacher" for r in candidate_user.roles):
+            print(f"[assign-teacher] 422: user {candidate_user.id} ({candidate_user.email}) lacks the teacher role.")
             raise HTTPException(status_code=422, detail="That user account does not have the teacher role.")
 
         teacher = db.query(Teacher).filter(

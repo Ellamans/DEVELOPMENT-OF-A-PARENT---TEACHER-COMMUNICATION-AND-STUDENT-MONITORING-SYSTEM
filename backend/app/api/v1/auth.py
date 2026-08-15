@@ -20,6 +20,7 @@ from app.core.security import (
 )
 from app.database.session import get_db
 from app.models.people import Parent, Student, Teacher
+from app.models.school import SchoolClass
 from app.models.user import Role, User
 from app.schemas.auth import (
     ApiResponse,
@@ -73,6 +74,12 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
     if not role:
         raise HTTPException(status_code=500, detail=f"Role '{payload.role}' is not seeded in the system.")
 
+    # Self-registered teachers stay "pending" (can't log in yet) until an
+    # admin approves them — see the /teachers/{id}/approve endpoint, which
+    # flips this to "active" and applies their requested class assignment.
+    # Parents and students remain immediately active, unchanged.
+    initial_status = "pending" if payload.role == "teacher" else "active"
+
     user = User(
         first_name=payload.first_name,
         middle_name=payload.middle_name,
@@ -82,7 +89,7 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         hashed_password=hash_password(payload.password),
         gender=payload.gender,
         date_of_birth=payload.date_of_birth,
-        status="active",
+        status=initial_status,
         email_verification_token=secrets.token_urlsafe(32),
     )
     user.roles.append(role)
@@ -125,15 +132,31 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         ))
         db.commit()
     elif payload.role == "teacher":
+        requested_class = None
+        if payload.class_id:
+            requested_class = db.query(SchoolClass).filter(
+                SchoolClass.id == payload.class_id, SchoolClass.deleted_at.is_(None)
+            ).first()
+            if not requested_class:
+                raise HTTPException(status_code=404, detail="That class no longer exists. Refresh the page and pick again.")
         db.add(Teacher(
             user_id=user.id,
             employee_id=_generate_employee_id(db),
             employment_status="active",
+            # Self-registration always needs admin sign-off before the class
+            # pick takes effect — see Teacher.approval_status.
+            approval_status="pending",
+            requested_class_id=requested_class.id if requested_class else None,
         ))
         db.commit()
 
     # NOTE: email dispatch is out of scope for this module; token is generated
     # and ready for a future SMTP integration to send a verification link.
+    if payload.role == "teacher":
+        return ApiResponse(
+            success=True,
+            message="Registration successful. Your class assignment is pending admin approval — you can sign in once it's approved.",
+        )
     return ApiResponse(success=True, message="Registration successful. Please verify your email.")
 
 
@@ -155,6 +178,8 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     if user.status != "active":
+        if user.status == "pending":
+            raise HTTPException(status_code=403, detail="Your account is awaiting admin approval. You'll be able to sign in once it's approved.")
         raise HTTPException(status_code=403, detail=f"Account is {user.status}.")
 
     user.failed_login_attempts = "0"

@@ -90,6 +90,14 @@ class Teacher(BaseModel):
     employment_date = Column(Date, nullable=True)
     employment_status = Column(String(20), default="active", nullable=False)
 
+    # Approval workflow for self-registered teachers: they pick a class at
+    # registration (requested_class_id); an admin must approve before that
+    # pick takes effect (i.e. before they become the class's class_teacher).
+    # Admin-created teacher profiles are "approved" immediately since there's
+    # nothing pending in that flow.
+    approval_status = Column(String(20), default="approved", nullable=False)  # pending, approved, rejected
+    requested_class_id = Column(UUID(as_uuid=True), ForeignKey("classes.id"), nullable=True)
+
     subjects = relationship("Subject", secondary=teacher_subjects)
     classes = relationship("SchoolClass", secondary=teacher_classes)
 

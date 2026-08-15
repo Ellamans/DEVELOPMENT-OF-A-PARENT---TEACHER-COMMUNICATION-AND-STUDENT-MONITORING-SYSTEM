@@ -15,6 +15,7 @@ class RegisterRequest(BaseModel):
     gender: Optional[str] = None
     date_of_birth: Optional[date] = None
     role: str  # role name to assign, validated server-side against allowed roles
+    class_id: Optional[UUID] = None  # teachers only: the class they're registering to take charge of
 
     @field_validator("email")
     @classmethod
