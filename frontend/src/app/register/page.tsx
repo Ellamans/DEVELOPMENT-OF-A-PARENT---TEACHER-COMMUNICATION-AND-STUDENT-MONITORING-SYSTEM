@@ -37,6 +37,7 @@ export default function RegisterPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [classes, setClasses] = useState<PublicClass[]>([]);
   const [classesLoading, setClassesLoading] = useState(false);
+  const [classesError, setClassesError] = useState<string | null>(null);
   const {
     register,
     handleSubmit,
@@ -50,17 +51,31 @@ export default function RegisterPage() {
   // (rather than once on page load) so a class an admin just created shows
   // up immediately, and one they just deleted disappears immediately too —
   // no stale list at the one moment it matters most.
-  useEffect(() => {
-    if (selectedRole !== "teacher") return;
+  function loadClasses() {
     let cancelled = false;
     setClassesLoading(true);
+    setClassesError(null);
     apiClient
       .get("/school-setup/classes/public")
       .then((res) => {
-        if (!cancelled) setClasses(res?.data?.data ?? []);
+        if (cancelled) return;
+        const body = res?.data?.data ?? res?.data ?? [];
+        setClasses(Array.isArray(body) ? body : []);
       })
-      .catch(() => {
-        if (!cancelled) setClasses([]);
+      .catch((err) => {
+        if (cancelled) return;
+        setClasses([]);
+        // Surface the real failure instead of silently showing "no classes" —
+        // those look identical to the user otherwise, and only one of them
+        // is actually fixable by the user (refreshing/retrying).
+        const status = err?.response?.status;
+        const detail = err?.response?.data?.detail;
+        setClassesError(
+          status
+            ? `Couldn't load classes (${status}${detail ? `: ${detail}` : ""}). Try refreshing the page.`
+            : "Couldn't reach the server to load classes. Check your connection and try refreshing."
+        );
+        console.error("Failed to load public classes:", err);
       })
       .finally(() => {
         if (!cancelled) setClassesLoading(false);
@@ -68,6 +83,12 @@ export default function RegisterPage() {
     return () => {
       cancelled = true;
     };
+  }
+
+  useEffect(() => {
+    if (selectedRole !== "teacher") return;
+    return loadClasses();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRole]);
 
   async function onSubmit(values: RegisterForm) {
@@ -153,7 +174,15 @@ export default function RegisterPage() {
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
-              {!classesLoading && !classes.length && (
+              {!classesLoading && classesError && (
+                <p className="text-xs text-red-500 mt-1">
+                  {classesError}{" "}
+                  <button type="button" onClick={loadClasses} className="underline">
+                    Retry
+                  </button>
+                </p>
+              )}
+              {!classesLoading && !classesError && !classes.length && (
                 <p className="text-xs text-text/40 mt-1">
                   No classes are set up yet — you can skip this and an admin will assign one.
                 </p>
